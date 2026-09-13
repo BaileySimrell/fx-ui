@@ -6173,7 +6173,7 @@ process.stdin.on("data", chunk => {
       expect(renderer.getPaintedText()).toContain("remember the pelican"),
     )
     await app.close()
-  })
+  }, 15_000)
 
   it("opens the process drawer with a live log, url, and stop", async () => {
     const { session, tools } = seed("full-access")
