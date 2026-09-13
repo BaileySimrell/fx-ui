@@ -7,6 +7,11 @@ import { webTools } from "./web"
 import { type HostTool, type ToolContext } from "./kit"
 
 export {
+  closeNamedSubagents,
+  enqueueChildNote,
+  resetNamedSubagents,
+} from "./agents"
+export {
   denyPendingApprovals,
   dismissPendingQuestions,
   forgetGrants,

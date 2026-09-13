@@ -26,6 +26,7 @@ import {
   forkSessionReporting,
   reloadSkills,
   cancel,
+  closeSession,
   send,
 } from "./src/agent/agent"
 import { loadModels, refreshCredentials } from "./src/agent/credentials"
@@ -112,7 +113,15 @@ import {
   undoLastEdit,
   type HostTool,
 } from "./src/tools"
-import { childSessionFor } from "./src/tools/agents"
+import {
+  childSessionFor,
+  closeNamedSubagents,
+  enqueueChildNote,
+  liveNamedSubagent,
+  parseSubagentInput,
+  resetNamedSubagents,
+  setSubagentOpener,
+} from "./src/tools/agents"
 import {
   ATTACHMENT_DIR,
   DEFAULT_MODEL,
@@ -199,6 +208,7 @@ const settle = () => new Promise((resolve) => setTimeout(resolve, 50))
 
 beforeEach(() => {
   resetState()
+  resetNamedSubagents()
 })
 
 describe("workspace confinement", () => {
@@ -1109,6 +1119,211 @@ describe("queued prompts", () => {
     expect(
       messagesOf(session.id).some((message) => message.kind === "user" && message.text === "do this next"),
     ).toBe(false)
+  })
+})
+
+describe("named subagents", () => {
+  type FakeLog = {
+    prompts: string[]
+    created: number
+    closed: number
+    cancelled: number
+    gate?: Promise<void>
+  }
+
+  function fakeAgent(log: FakeLog): Agent {
+    return {
+      prompt(input, options) {
+        const text = typeof input === "string" ? input : JSON.stringify(input)
+        log.prompts.push(text)
+        let cancelled = false
+        const mark = () => {
+          if (cancelled) return
+          cancelled = true
+          log.cancelled += 1
+        }
+        options?.signal?.addEventListener("abort", mark)
+        return {
+          async *[Symbol.asyncIterator]() {
+            if (log.gate) await log.gate
+            if (cancelled) return
+            yield { type: "text_delta" as const, delta: `ok:${text}` }
+          },
+          result: Promise.resolve().then(async () => {
+            if (log.gate) await log.gate
+            return {
+              stopReason: cancelled ? ("cancelled" as const) : ("end_turn" as const),
+              usage: {},
+            }
+          }),
+          cancel: mark,
+        }
+      },
+      async checkpoint() {
+        return new Uint8Array()
+      },
+      async close() {
+        log.closed += 1
+      },
+    }
+  }
+
+  function installFake(gate?: Promise<void>): FakeLog {
+    const log: FakeLog = { prompts: [], created: 0, closed: 0, cancelled: 0, gate }
+    setSubagentOpener(async () => {
+      log.created += 1
+      return fakeAgent(log)
+    })
+    return log
+  }
+
+  function keyed() {
+    const seeded = seed()
+    setState((current) => ({ ...current, apiKey: "test-key" }))
+    return seeded
+  }
+
+  async function waitForLive(sessionId: string): Promise<void> {
+    const deadline = Date.now() + 2_000
+    while (Date.now() < deadline) {
+      if (liveNamedSubagent(sessionId)) return
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    throw new Error("named child did not start")
+  }
+
+  it("treats a bare task as a one-off, and agent plus message as a named child", () => {
+    expect(parseSubagentInput({ task: "survey the repo" })).toMatchObject({
+      action: "run",
+      task: "survey the repo",
+    })
+    expect(
+      parseSubagentInput({ action: "message", agent: "reviewer", message: "look around" }),
+    ).toMatchObject({ action: "message", name: "reviewer", task: "look around" })
+    expect(parseSubagentInput({ agent: "reviewer", task: "look around" }).action).toBe("message")
+    expect(() => parseSubagentInput({ action: "message", agent: "reviewer" })).toThrow(
+      /Say what to send this child/,
+    )
+    expect(() => parseSubagentInput({ action: "message", message: "look" })).toThrow(/name/)
+    expect(() => parseSubagentInput({ action: "wait" })).toThrow(/run" or "message/)
+  })
+
+  it("keeps a named child for a later message, and closes a one-off after it answers", async () => {
+    const { session, tools } = keyed()
+    const log = installFake()
+
+    expect(await run(tools.subagent, { task: "survey once" })).toContain("ok:survey once")
+    expect(log.created).toBe(1)
+    expect(log.closed).toBe(1)
+
+    expect(
+      await run(tools.subagent, { action: "message", agent: "reviewer", message: "look around" }),
+    ).toContain("ok:look around")
+    expect(
+      await run(tools.subagent, { action: "message", agent: "reviewer", message: "again" }),
+    ).toContain("ok:again")
+    expect(log.created).toBe(2)
+    expect(log.closed).toBe(1)
+    expect(log.prompts).toEqual(["survey once", "look around", "again"])
+
+    await closeNamedSubagents(session.id)
+    expect(log.closed).toBe(2)
+  })
+
+  it("opens a second named child instead of reusing the first", async () => {
+    const { tools } = keyed()
+    const log = installFake()
+    await run(tools.subagent, { action: "message", agent: "reviewer", message: "one" })
+    await run(tools.subagent, { action: "message", agent: "searcher", message: "two" })
+    expect(log.created).toBe(2)
+  })
+
+  it("notes a named child without cancelling the turn it is on", async () => {
+    const { session, tools } = keyed()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const log = installFake(gate)
+
+    const pending = run(tools.subagent, {
+      action: "message",
+      agent: "reviewer",
+      message: "look around",
+    })
+    await waitForLive(session.id)
+    expect(enqueueChildNote(session.id, "also check tests")).toBe(true)
+    expect(log.cancelled).toBe(0)
+    expect(getState().subagentNotes[session.id]?.map((item) => item.text)).toEqual([
+      "also check tests",
+    ])
+
+    release()
+    const answer = await pending
+    expect(log.cancelled).toBe(0)
+    expect(log.prompts).toEqual(["look around", "also check tests"])
+    expect(String(answer)).toContain("ok:look around")
+    expect(String(answer)).toContain("ok:also check tests")
+    expect(liveNamedSubagent(session.id)).toBeNull()
+  })
+
+  it("routes Return to the live named child, and still queues when the child is a one-off", async () => {
+    const { session, tools } = keyed()
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    installFake(gate)
+
+    updateSession(session.id, (current) => ({ ...current, status: "running" }))
+    const pending = run(tools.subagent, {
+      action: "message",
+      agent: "reviewer",
+      message: "look around",
+    })
+    await waitForLive(session.id)
+
+    await send(session.id, "also check tests")
+    expect(getState().queue[session.id]).toBeUndefined()
+    expect(getState().subagentNotes[session.id]?.map((item) => item.text)).toEqual([
+      "also check tests",
+    ])
+    expect(
+      messagesOf(session.id).some(
+        (message) => message.kind === "user" && message.text === "also check tests",
+      ),
+    ).toBe(false)
+
+    await send(session.id, "with a picture", ["/tmp/a.png"])
+    expect(getState().queue[session.id]?.map((item) => item.text)).toEqual(["with a picture"])
+
+    release()
+    await pending
+
+    const oneOff = keyed()
+    let releaseOne!: () => void
+    const oneGate = new Promise<void>((resolve) => {
+      releaseOne = resolve
+    })
+    installFake(oneGate)
+    updateSession(oneOff.session.id, (current) => ({ ...current, status: "running" }))
+    const pendingOne = run(oneOff.tools.subagent, { task: "survey the repo" })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(liveNamedSubagent(oneOff.session.id)).toBeNull()
+    await send(oneOff.session.id, "do this next")
+    expect(getState().queue[oneOff.session.id]?.map((item) => item.text)).toEqual(["do this next"])
+    releaseOne()
+    await pendingOne
+  })
+
+  it("closes named children with the session", async () => {
+    const { session, tools } = keyed()
+    const log = installFake()
+    await run(tools.subagent, { action: "message", agent: "reviewer", message: "look around" })
+    expect(log.closed).toBe(0)
+    await closeSession(session.id)
+    expect(log.closed).toBe(1)
+    expect(liveNamedSubagent(session.id)).toBeNull()
   })
 })
 
@@ -5605,6 +5820,28 @@ process.stdin.on("data", chunk => {
     const id = getState().queue[session.id]![0]!.id
     await app.getByTestId(`queue-dismiss-${id}`).click()
     expect(getState().queue[session.id]).toBeUndefined()
+    await app.close()
+  })
+
+  it("shows a note for a named child and dismisses it", async () => {
+    const workspace = createWorkspace(tempDir(), "demo")
+    const session = createSession(workspace.id)
+    openSession(session.id, 0)
+    updateSession(session.id, (current) => ({ ...current, status: "running" }))
+    setState((current) => ({
+      ...current,
+      liveSubagent: { [session.id]: "reviewer" },
+      subagentNotes: {
+        [session.id]: [{ id: "n1", name: "reviewer", text: "also check tests" }],
+      },
+    }))
+
+    const { renderer, app } = await mount()
+    await app.getByTestId("subagent-notes").waitFor()
+    expect(renderer.getPaintedText().join("\n")).toContain("reviewer: also check tests")
+
+    await app.getByTestId("subagent-note-dismiss-n1").click()
+    expect(getState().subagentNotes[session.id]).toBeUndefined()
     await app.close()
   })
 

@@ -360,8 +360,11 @@ The set fx documents at
 `subagent` and `vision` run on whatever credential the session runs on. A child
 may take its own `model` and `effort`; omit them and it inherits the parent's.
 The child cannot use a login the parent does not have. Nested children are
-still disallowed. The parent waits for the child's answer. Named children and
-notes sent while a child is working are not in this version.
+still disallowed. A one-off child (`task`, or `action` `run`) is discarded after
+it answers. A named child (`action` `message` plus a name) keeps its conversation
+for the session; closing the session drops it. The parent still waits for the
+child's current answer. Return while that child is working notes it instead of
+queueing a follow-up, and does not cancel the tool it is on.
 
 Every model whose catalogue reports an `image` input modality can read one, which is
 both providers' whole line except Codex Spark. So `vision` sends the image as an
