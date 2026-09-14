@@ -362,7 +362,9 @@ may take its own `model` and `effort`; omit them and it inherits the parent's.
 The child cannot use a login the parent does not have. Nested children are
 still disallowed. A one-off child (`task`, or `action` `run`) is discarded after
 it answers. A named child (`action` `message` plus a name) keeps its conversation
-for the session; closing the session drops it. The parent still waits for the
+for the session, four at most: a fifth name closes the one used least recently.
+Closing the session drops them. A name that no longer has a live child starts a
+new one, and the tool result tells the parent it remembers nothing. The parent still waits for the
 child's current answer. Return while that child is working notes it instead of
 queueing a follow-up, and does not cancel the tool it is on.
 

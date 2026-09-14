@@ -267,17 +267,34 @@ function asAnswer(
   return { text: collected.text, label: labelled(input, child, "done") }
 }
 
+/** Each named child holds a native libfx runtime until its session closes, and
+ *  libfx refuses new runtimes past its own limit, so a session keeps only a few. */
+const MAX_NAMED_CHILDREN = 4
+
 async function namedChildFor(
   ctx: ToolContext & { messageId: string },
   input: SubagentCall,
   makeTools: (context: ToolContext) => HostTool[],
-): Promise<NamedChild> {
+): Promise<{ handle: NamedChild; fresh: boolean }> {
   const name = input.name!
-  const existing = namedChildren.get(childKey(ctx.sessionId, name))
+  const key = childKey(ctx.sessionId, name)
+  const existing = namedChildren.get(key)
   if (existing) {
+    // Re-inserting keeps the map ordered from least to most recently used.
+    namedChildren.delete(key)
+    namedChildren.set(key, existing)
     existing.messageId = ctx.messageId
     existing.steps.clear()
-    return existing
+    return { handle: existing, fresh: false }
+  }
+
+  const own = [...namedChildren.entries()].filter(([, child]) => child.sessionId === ctx.sessionId)
+  if (own.length >= MAX_NAMED_CHILDREN) {
+    const oldest = own.find(([, child]) => !child.busy)
+    if (oldest) {
+      namedChildren.delete(oldest[0])
+      await oldest[1].agent.close().catch(() => {})
+    }
   }
 
   const prepared = openChild(ctx, input)
@@ -304,8 +321,8 @@ async function namedChildFor(
       },
     }),
   })
-  namedChildren.set(childKey(ctx.sessionId, name), handle)
-  return handle
+  namedChildren.set(key, handle)
+  return { handle, fresh: true }
 }
 
 function openChild(
@@ -483,7 +500,7 @@ export function agentTools(
                   }
                 }
 
-                const handle = await namedChildFor(ctx, input, makeTools)
+                const { handle, fresh } = await namedChildFor(ctx, input, makeTools)
                 handle.busy = true
                 setLiveSubagent(ctx.sessionId, handle.name)
                 try {
@@ -504,8 +521,13 @@ export function agentTools(
                     throw new Error("Stopped.")
                   }
                   const last = parts.at(-1) ?? ""
+                  const answer = parts.length > 1 ? parts.join("\n\n") : last
+                  // Named children live only in memory, so after a restart or an
+                  // eviction the same name is a stranger; the parent must know.
                   return {
-                    text: parts.length > 1 ? parts.join("\n\n") : last,
+                    text: fresh
+                      ? `This is a new child named ${handle.name}; it remembers nothing from earlier messages.\n\n${answer}`
+                      : answer,
                     label: labelled(input, handle.child, "done"),
                   }
                 } finally {

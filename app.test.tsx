@@ -1238,6 +1238,27 @@ describe("named subagents", () => {
     expect(log.created).toBe(2)
   })
 
+  it("says when a named child starts fresh, and keeps at most four per session", async () => {
+    const { session, tools } = keyed()
+    const log = installFake()
+    const message = (agent: string, text: string) =>
+      run(tools.subagent, { action: "message", agent, message: text })
+
+    expect(await message("a", "one")).toContain("new child named a")
+    expect(await message("a", "two")).not.toContain("new child")
+    for (const name of ["b", "c", "d"]) await message(name, "x")
+    expect(log.closed).toBe(0)
+
+    await message("a", "keep me")
+    await message("e", "x")
+    expect(log.created).toBe(5)
+    expect(log.closed).toBe(1)
+    expect(await message("a", "still here")).not.toContain("new child")
+    expect(await message("b", "back")).toContain("new child named b")
+
+    await closeNamedSubagents(session.id)
+  })
+
   it("notes a named child without cancelling the turn it is on", async () => {
     const { session, tools } = keyed()
     let release!: () => void
