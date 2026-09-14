@@ -179,7 +179,7 @@ headers of every reply. Codex sends the plan and each usage window with when it
 resets. Grok sends the requests and tokens left.
 
 During automatic compaction, “Compacting…” appears above the composer. The
-bundled libfx 0.0.8 engine does not publish compaction notices over ACP, so the
+bundled libfx engine does not publish compaction notices over ACP, so the
 app recognizes its dedicated summary system prompt in outgoing model requests.
 This works before Gateway, Grok, or Codex routing. The indicator stays visible
 through summary requests and clears when the next ordinary model request
@@ -260,7 +260,7 @@ Nothing opens a browser mid-turn. A server that needs you appears as a notice,
 and you sign in when you choose to.
 
 MCP catalogs load up to 1,024 tools per server, with pagination and duplicate
-name checks. A small `libfx@0.0.8` patch adds an explicit catalog limit option;
+name checks. A small `libfx@0.0.10` patch adds an explicit catalog limit option;
 the SDK's default stays at 64. This matters for servers such as Linear, whose
 catalog is larger than the SDK default. The agent still has at most 64 host
 tool slots: it discovers MCP tools with `capability_search`, reads a schema
