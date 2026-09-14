@@ -45,7 +45,8 @@ export function Label({
         ...(lines ? { lineClamp: lines } : null),
       }}
     >
-      {children}
+      {/* nowrap alone still breaks at "\n", so a multi-line value would spill out of its row */}
+      {truncate && typeof children === "string" ? children.replace(/\s*\n\s*/g, " ") : children}
     </text>
   )
 }

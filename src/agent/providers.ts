@@ -1,7 +1,7 @@
 import { credential, PROVIDERS, type ProviderId } from "./oauth"
 import { dataOf, sseEvents, toResponsesRequest, translateStream, type Json } from "./responses"
 
-/** libfx 0.0.9 sends chat requests to v4; v3 is still an accepted
+/** libfx 0.0.9 and later send chat requests to v4; v3 is still an accepted
  *  `gatewayChatUrl`, and the two share a wire format apart from image parts. */
 const GATEWAY_LANGUAGE_MODEL_URLS = [
   "https://ai-gateway.vercel.sh/v4/ai/language-model",

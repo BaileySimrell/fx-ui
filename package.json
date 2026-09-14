@@ -1,6 +1,6 @@
 {
   "name": "fx-ui",
-  "version": "0.2.2",
+  "version": "0.2.4",
   "license": "Apache-2.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
   "dependencies": {
     "@gpuix/react": "^0.7.0",
     "jsonc-parser": "^3.3.1",
-    "libfx": "^0.0.9",
+    "libfx": "^0.0.10",
     "react": "^19.2.4"
   },
   "devDependencies": {
@@ -27,6 +27,6 @@
   },
   "patchedDependencies": {
     "@gpuix/react@0.7.0": "patches/@gpuix%2Freact@0.7.0.patch",
-    "libfx@0.0.9": "patches/libfx@0.0.9.patch"
+    "libfx@0.0.10": "patches/libfx@0.0.10.patch"
   }
 }
