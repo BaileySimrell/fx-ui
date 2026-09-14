@@ -1,12 +1,16 @@
-import { createFxAgent, type Agent } from "libfx"
+import { createFxAgent, type Agent, type AgentOptions } from "libfx"
 
 import { backing } from "../agent/backing"
 import {
   answerable,
   findSession,
+  forgetChildNotes,
   getState,
   patchMessage,
+  pushChildNote,
   sessionModel,
+  setLiveSubagent,
+  takeChildNote,
   type AppState,
   type Model,
   type Session,
@@ -113,6 +117,238 @@ export function childSessionFor(
   return next
 }
 
+const AGENT_NAME = /^[A-Za-z][A-Za-z0-9_-]{0,31}$/
+
+export type SubagentCall = {
+  action: "run" | "message"
+  name?: string
+  task: string
+  instructions?: string
+  model?: string
+  effort?: string
+}
+
+export function parseSubagentInput(input: unknown): SubagentCall {
+  const actionRaw = optionalString(input, "action")
+  if (actionRaw && actionRaw !== "run" && actionRaw !== "message") {
+    throw new Error('action must be "run" or "message".')
+  }
+  const name = optionalString(input, "agent") || undefined
+  const message = optionalString(input, "message") || undefined
+  const task = optionalString(input, "task") || undefined
+  const instructions = optionalString(input, "instructions") || undefined
+  const model = optionalString(input, "model") || undefined
+  const effort = optionalString(input, "effort") || undefined
+  const action: "run" | "message" =
+    actionRaw === "message" || (!actionRaw && name) ? "message" : "run"
+
+  if (action === "message") {
+    if (!name || !AGENT_NAME.test(name)) {
+      throw new Error("A named child needs a name of letters, digits, _ and -.")
+    }
+    const body = message || task
+    if (!body) throw new Error("Say what to send this child.")
+    return { action, name, task: body, instructions, model, effort }
+  }
+
+  const body = task || message
+  if (!body) throw new Error("Say what the subagent should do.")
+  return { action: "run", task: body, instructions, model, effort }
+}
+
+type NamedChild = {
+  sessionId: string
+  name: string
+  agent: Agent
+  child: Session
+  instructions?: string
+  busy: boolean
+  messageId: string
+  steps: Map<string, SubagentStep>
+}
+
+const namedChildren = new Map<string, NamedChild>()
+
+type AgentOpener = (options: AgentOptions) => Promise<Agent>
+
+let openAgent: AgentOpener = createFxAgent
+
+export function setSubagentOpener(opener: AgentOpener | null): void {
+  openAgent = opener ?? createFxAgent
+}
+
+export function resetNamedSubagents(): void {
+  for (const child of namedChildren.values()) {
+    void child.agent.close().catch(() => {})
+  }
+  namedChildren.clear()
+  openAgent = createFxAgent
+}
+
+function childKey(sessionId: string, name: string): string {
+  return `${sessionId}:${name}`
+}
+
+export function liveNamedSubagent(sessionId: string): string | null {
+  for (const child of namedChildren.values()) {
+    if (child.sessionId === sessionId && child.busy) return child.name
+  }
+  return null
+}
+
+export function enqueueChildNote(sessionId: string, text: string): boolean {
+  const name = liveNamedSubagent(sessionId)
+  if (!name) return false
+  pushChildNote(sessionId, name, text)
+  return true
+}
+
+export async function closeNamedSubagents(sessionId: string): Promise<void> {
+  const matching = [...namedChildren.entries()].filter(
+    ([, child]) => child.sessionId === sessionId,
+  )
+  for (const [key, child] of matching) {
+    namedChildren.delete(key)
+    await child.agent.close().catch(() => {})
+  }
+  forgetChildNotes(sessionId)
+}
+
+function childInstructions(root: string, extra?: string): string {
+  return [
+    "You are a subagent working inside one workspace directory.",
+    `Workspace root: ${root}`,
+    "",
+    "You cannot see the conversation that delegated this task, and nobody",
+    "reads your intermediate steps. Do the work, then answer with the",
+    "findings themselves: file paths, line numbers, what you concluded.",
+    "Do not describe what you did.",
+    ...(extra ? ["", extra] : []),
+  ].join("\n")
+}
+
+async function collectTurn(
+  agent: Agent,
+  prompt: string,
+  signal: AbortSignal,
+): Promise<{ text: string; stopReason: string }> {
+  const turn = agent.prompt(prompt, { signal })
+  let answer = ""
+  for await (const event of turn) {
+    if (event.type === "text_delta") answer += event.delta
+  }
+  const result = await turn.result
+  return { text: answer, stopReason: result.stopReason }
+}
+
+function labelled(
+  input: SubagentCall,
+  child: Session,
+  status: string,
+): string {
+  const chosen =
+    input.model || input.effort
+      ? [child.modelName ?? child.model, child.effort].filter(Boolean)
+      : []
+  return [input.name, input.task, ...chosen, status].filter(Boolean).join(" · ")
+}
+
+function asAnswer(
+  input: SubagentCall,
+  child: Session,
+  collected: { text: string; stopReason: string },
+): { text: string; label: string } {
+  if (!collected.text.trim()) {
+    return {
+      text: `The subagent finished with no answer (${collected.stopReason}).`,
+      label: labelled(input, child, collected.stopReason),
+    }
+  }
+  return { text: collected.text, label: labelled(input, child, "done") }
+}
+
+/** Each named child holds a native libfx runtime until its session closes, and
+ *  libfx refuses new runtimes past its own limit, so a session keeps only a few. */
+const MAX_NAMED_CHILDREN = 4
+
+async function namedChildFor(
+  ctx: ToolContext & { messageId: string },
+  input: SubagentCall,
+  makeTools: (context: ToolContext) => HostTool[],
+): Promise<{ handle: NamedChild; fresh: boolean }> {
+  const name = input.name!
+  const key = childKey(ctx.sessionId, name)
+  const existing = namedChildren.get(key)
+  if (existing) {
+    // Re-inserting keeps the map ordered from least to most recently used.
+    namedChildren.delete(key)
+    namedChildren.set(key, existing)
+    existing.messageId = ctx.messageId
+    existing.steps.clear()
+    return { handle: existing, fresh: false }
+  }
+
+  const own = [...namedChildren.entries()].filter(([, child]) => child.sessionId === ctx.sessionId)
+  if (own.length >= MAX_NAMED_CHILDREN) {
+    const oldest = own.find(([, child]) => !child.busy)
+    if (oldest) {
+      namedChildren.delete(oldest[0])
+      await oldest[1].agent.close().catch(() => {})
+    }
+  }
+
+  const prepared = openChild(ctx, input)
+  const handle: NamedChild = {
+    sessionId: ctx.sessionId,
+    name,
+    agent: null as unknown as Agent,
+    child: prepared.child,
+    instructions: input.instructions,
+    busy: false,
+    messageId: ctx.messageId,
+    steps: new Map(),
+  }
+  handle.agent = await openAgent({
+    ...prepared.back.options,
+    instructions: childInstructions(ctx.root, input.instructions),
+    tools: makeTools({
+      ...ctx,
+      depth: (ctx.depth ?? 0) + 1,
+      search: prepared.back.search,
+      onStep: (step) => {
+        handle.steps.set(step.id, step)
+        patchMessage(handle.sessionId, handle.messageId, { steps: [...handle.steps.values()] })
+      },
+    }),
+  })
+  namedChildren.set(key, handle)
+  return { handle, fresh: true }
+}
+
+function openChild(
+  ctx: ToolContext,
+  input: SubagentCall,
+): { child: Session; back: NonNullable<ReturnType<typeof backing>> } {
+  const parent = findSession(getState(), ctx.sessionId)
+  if (!parent) {
+    throw new Error("A subagent runs on the same credential as this session, and it has none.")
+  }
+  const child = childSessionFor(parent, { model: input.model, effort: input.effort })
+  const back = backing(child, searchRows(ctx.sessionId))
+  if (!back) {
+    throw new Error("A subagent runs on the same credential as this session, and it has none.")
+  }
+  return { child, back }
+}
+
+function followUpPrompt(handle: NamedChild, input: SubagentCall): string {
+  if (input.instructions && input.instructions !== handle.instructions) {
+    handle.instructions = input.instructions
+    return `Updated instructions:\n${input.instructions}\n\n${input.task}`
+  }
+  return input.task
+}
+
 export function agentTools(
   context: ToolContext,
   makeTools: (context: ToolContext) => HostTool[],
@@ -184,21 +420,33 @@ export function agentTools(
     ...((context.depth ?? 0) >= MAX_SUBAGENT_DEPTH
       ? []
       : [
-          defineTool<{ task: string; instructions?: string; model?: string; effort?: string }>(
+          defineTool<SubagentCall>(
             {
               name: "subagent",
               description:
-                "Delegate a self-contained task to a second agent with the same workspace tools, and get back only its final answer. Use it for work whose intermediate steps you do not need, like a wide search or a survey of many files, so their output does not fill this conversation. You may set model and effort so the child uses a different one than this conversation, for example a faster model to implement after you have planned.",
+                "Delegate work to a second agent with the same workspace tools, and get back only its final answer. Use it for work whose intermediate steps you do not need, like a wide search or a survey of many files. Pass task for a one-off child that is discarded after it answers. Pass action \"message\" with agent and message to create or continue a named child that keeps its conversation. You may set model and effort so the child uses a different one than this conversation, for example a faster model to implement after you have planned.",
               inputSchema: {
                 type: "object",
                 properties: {
+                  action: {
+                    type: "string",
+                    description: '"run" for a one-off child, or "message" to create or continue a named child. Omit with task for a one-off.',
+                  },
                   task: {
                     type: "string",
                     description: "What the subagent should do. State it completely: it cannot see this conversation.",
                   },
+                  agent: {
+                    type: "string",
+                    description: "Name for a child that should keep its conversation. Letters, digits, _ and -.",
+                  },
+                  message: {
+                    type: "string",
+                    description: "What to send a named child. On action message this is the body; task is accepted too.",
+                  },
                   instructions: {
                     type: "string",
-                    description: "Extra direction on how to work or what to report.",
+                    description: "Extra direction on how to work or what to report. On a named child, a later call replaces the extra instructions.",
                   },
                   model: {
                     type: "string",
@@ -211,83 +459,81 @@ export function agentTools(
                       "Optional reasoning effort for that model. Omit to inherit, or to use that model's default when it does not support the parent's effort.",
                   },
                 },
-                required: ["task"],
               },
-              parse: (input) => ({
-                task: requireString(input, "task"),
-                instructions: optionalString(input, "instructions") || undefined,
-                model: optionalString(input, "model") || undefined,
-                effort: optionalString(input, "effort") || undefined,
-              }),
-              // The last segment is the status: the activity card drops it and
-              // shows the state itself, keeping the task and any chosen model.
+              parse: parseSubagentInput,
               label: (input) =>
-                input.model || input.effort
-                  ? [input.task, input.model, input.effort, "running"].filter(Boolean).join(" · ")
+                input.name || input.model || input.effort
+                  ? [input.name, input.task, input.model, input.effort, "running"]
+                      .filter(Boolean)
+                      .join(" · ")
                   : input.task,
               run: async (input, ctx) => {
-                const parent = findSession(getState(), ctx.sessionId)
-                if (!parent) {
-                  throw new Error(
-                    "A subagent runs on the same credential as this session, and it has none.",
-                  )
-                }
-                const child = childSessionFor(parent, { model: input.model, effort: input.effort })
-                const back = backing(child, searchRows(ctx.sessionId))
-                if (!back) {
-                  throw new Error(
-                    "A subagent runs on the same credential as this session, and it has none.",
-                  )
-                }
-
                 const steps = new Map<string, SubagentStep>()
                 const publishSteps = () =>
                   patchMessage(ctx.sessionId, ctx.messageId, { steps: [...steps.values()] })
-
-                const agent = (await createFxAgent({
-                  ...back.options,
-                  instructions: [
-                    "You are a subagent working inside one workspace directory.",
-                    `Workspace root: ${ctx.root}`,
-                    "",
-                    "You cannot see the conversation that delegated this task, and nobody",
-                    "reads your intermediate steps. Do the work, then answer with the",
-                    "findings themselves: file paths, line numbers, what you concluded.",
-                    "Do not describe what you did.",
-                    ...(input.instructions ? ["", input.instructions] : []),
-                  ].join("\n"),
-                  tools: makeTools({
+                const nestedTools = (search: boolean) =>
+                  makeTools({
                     ...ctx,
                     depth: (ctx.depth ?? 0) + 1,
-                    search: back.search,
+                    search,
                     onStep: (step) => {
                       steps.set(step.id, step)
                       publishSteps()
                     },
-                  }),
-                })) as Agent
+                  })
 
+                if (input.action === "run") {
+                  const prepared = openChild(ctx, input)
+                  const agent = await openAgent({
+                    ...prepared.back.options,
+                    instructions: childInstructions(ctx.root, input.instructions),
+                    tools: nestedTools(prepared.back.search),
+                  })
+                  try {
+                    return asAnswer(
+                      input,
+                      prepared.child,
+                      await collectTurn(agent, input.task, ctx.signal),
+                    )
+                  } finally {
+                    await agent.close()
+                  }
+                }
+
+                const { handle, fresh } = await namedChildFor(ctx, input, makeTools)
+                handle.busy = true
+                setLiveSubagent(ctx.sessionId, handle.name)
                 try {
-                  const turn = agent.prompt(input.task, { signal: ctx.signal })
-                  let answer = ""
-                  for await (const event of turn) {
-                    if (event.type === "text_delta") answer += event.delta
+                  const parts: string[] = []
+                  const first = await collectTurn(
+                    handle.agent,
+                    followUpPrompt(handle, input),
+                    ctx.signal,
+                  )
+                  parts.push(asAnswer(input, handle.child, first).text)
+                  while (!ctx.signal.aborted) {
+                    const note = takeChildNote(ctx.sessionId, handle.name)
+                    if (!note) break
+                    const next = await collectTurn(handle.agent, note, ctx.signal)
+                    parts.push(asAnswer(input, handle.child, next).text)
                   }
-                  const result = await turn.result
-                  const chosen =
-                    input.model || input.effort
-                      ? [child.modelName ?? child.model, child.effort].filter(Boolean)
-                      : []
-                  const labelled = (status: string) => [input.task, ...chosen, status].join(" · ")
-                  if (!answer.trim()) {
-                    return {
-                      text: `The subagent finished with no answer (${result.stopReason}).`,
-                      label: labelled(result.stopReason),
-                    }
+                  if (ctx.signal.aborted) {
+                    throw new Error("Stopped.")
                   }
-                  return { text: answer, label: labelled("done") }
+                  const last = parts.at(-1) ?? ""
+                  const answer = parts.length > 1 ? parts.join("\n\n") : last
+                  // Named children live only in memory, so after a restart or an
+                  // eviction the same name is a stranger; the parent must know.
+                  return {
+                    text: fresh
+                      ? `This is a new child named ${handle.name}; it remembers nothing from earlier messages.\n\n${answer}`
+                      : answer,
+                    label: labelled(input, handle.child, "done"),
+                  }
                 } finally {
-                  await agent.close()
+                  handle.busy = false
+                  setLiveSubagent(ctx.sessionId, null)
+                  forgetChildNotes(ctx.sessionId)
                 }
               },
             },

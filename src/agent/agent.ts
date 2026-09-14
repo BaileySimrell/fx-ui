@@ -32,8 +32,10 @@ import {
 import {
   adopt,
   createTools,
+  closeNamedSubagents,
   denyPendingApprovals,
   dismissPendingQuestions,
+  enqueueChildNote,
   forgetEdits,
   forgetToolResults,
   searchRows,
@@ -104,6 +106,7 @@ function instructionsFor(root: string, tools: string[]): string[] {
       "- Search the web for anything outside the workspace; web_fetch when you already have a URL.",
       "- Delegate wide, self-contained work to subagent so its steps stay out of this conversation.",
       "- subagent may take a different model and reasoning effort than this conversation, so you can plan on a frontier model and hand implementation to a faster one.",
+      "- A named child keeps its conversation, so follow-up work uses the same name.",
       "- ask_user_question only when the choice is the user's to make.",
       "- capability_search before assuming something is missing; skill reads one in full.",
       "- vision reads an image file, such as a screenshot of a failing UI or a diagram.",
@@ -470,6 +473,7 @@ export async function send(
 
   if (current.status === "running") {
     if (!trimmed && images.length === 0) return
+    if (trimmed && images.length === 0 && enqueueChildNote(sessionId, trimmed)) return
     enqueuePrompt(sessionId, trimmed, images)
     return
   }
@@ -699,13 +703,15 @@ export async function forkSessionReporting(
 
 export async function closeSession(sessionId: string): Promise<void> {
   const runtime = runtimes.get(sessionId)
-  if (!runtime) return
-  await disposeRuntime(sessionId, runtime, { checkpoint: false })
-  forgetToolResults(sessionId)
-  forgetEdits(sessionId)
-  forgetTurn(sessionId)
-  forgetQueue(sessionId)
-  stopBackgroundCommands(sessionId)
+  if (runtime) {
+    await disposeRuntime(sessionId, runtime, { checkpoint: false })
+    forgetToolResults(sessionId)
+    forgetEdits(sessionId)
+    forgetTurn(sessionId)
+    forgetQueue(sessionId)
+    stopBackgroundCommands(sessionId)
+  }
+  await closeNamedSubagents(sessionId)
 }
 
 export async function closeAll(): Promise<void> {

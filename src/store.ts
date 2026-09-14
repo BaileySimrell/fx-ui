@@ -128,6 +128,12 @@ export type QueuedPrompt = {
   images: string[]
 }
 
+export type ChildNote = {
+  id: string
+  name: string
+  text: string
+}
+
 export type Chosen = {
   id: string
   provider: "grok" | "codex" | null
@@ -201,6 +207,8 @@ export type AppState = {
   background: Record<string, BackgroundCommand[]>
   attachments: Record<string, string[]>
   queue: Record<string, QueuedPrompt[]>
+  liveSubagent: Record<string, string>
+  subagentNotes: Record<string, ChildNote[]>
   git: Record<string, GitStatus | null>
   diffView: Record<string, DiffView>
   limits: Record<string, PlanLimits>
@@ -272,6 +280,8 @@ function emptyState(): AppState {
     background: {},
     attachments: {},
     queue: {},
+    liveSubagent: {},
+    subagentNotes: {},
     git: {},
     diffView: {},
     limits: {},
@@ -741,6 +751,8 @@ export function removeSession(sessionId: string): void {
       pane.sessionId === sessionId ? { sessionId: null } : pane,
     ),
     queue: omitQueue(current.queue, sessionId),
+    liveSubagent: omitRecord(current.liveSubagent, sessionId),
+    subagentNotes: omitRecord(current.subagentNotes, sessionId),
   }))
   forgetCheckpoint(sessionId)
 }
@@ -773,6 +785,12 @@ export function removeWorkspace(workspaceId: string): void {
       }),
       queue: Object.fromEntries(
         Object.entries(current.queue).filter(([id]) => live.has(id)),
+      ),
+      liveSubagent: Object.fromEntries(
+        Object.entries(current.liveSubagent).filter(([id]) => live.has(id)),
+      ),
+      subagentNotes: Object.fromEntries(
+        Object.entries(current.subagentNotes).filter(([id]) => live.has(id)),
       ),
     }
   })
@@ -921,14 +939,21 @@ export function setAttachments(sessionId: string, files: string[]): void {
   }))
 }
 
+function omitRecord<V>(
+  record: Record<string, V>,
+  sessionId: string,
+): Record<string, V> {
+  if (!(sessionId in record)) return record
+  const next = { ...record }
+  delete next[sessionId]
+  return next
+}
+
 function omitQueue(
   queue: Record<string, QueuedPrompt[]>,
   sessionId: string,
 ): Record<string, QueuedPrompt[]> {
-  if (!(sessionId in queue)) return queue
-  const next = { ...queue }
-  delete next[sessionId]
-  return next
+  return omitRecord(queue, sessionId)
 }
 
 export function enqueuePrompt(sessionId: string, text: string, images: string[] = []): void {
@@ -971,6 +996,72 @@ export function forgetQueue(sessionId: string): void {
   setState((current) => {
     if (!(sessionId in current.queue)) return current
     return { ...current, queue: omitQueue(current.queue, sessionId) }
+  })
+}
+
+export function setLiveSubagent(sessionId: string, name: string | null): void {
+  setState((current) => {
+    if (name === null) {
+      if (!(sessionId in current.liveSubagent)) return current
+      return { ...current, liveSubagent: omitRecord(current.liveSubagent, sessionId) }
+    }
+    if (current.liveSubagent[sessionId] === name) return current
+    return {
+      ...current,
+      liveSubagent: { ...current.liveSubagent, [sessionId]: name },
+    }
+  })
+}
+
+export function pushChildNote(sessionId: string, name: string, text: string): ChildNote {
+  const item: ChildNote = { id: newId(), name, text }
+  setState((current) => ({
+    ...current,
+    subagentNotes: {
+      ...current.subagentNotes,
+      [sessionId]: [...(current.subagentNotes[sessionId] ?? []), item],
+    },
+  }))
+  return item
+}
+
+export function takeChildNote(sessionId: string, name: string): string | null {
+  let taken: string | null = null
+  setState((current) => {
+    const list = current.subagentNotes[sessionId] ?? []
+    const index = list.findIndex((item) => item.name === name)
+    if (index < 0) return current
+    taken = list[index]!.text
+    const rest = list.filter((_, i) => i !== index)
+    const subagentNotes = { ...current.subagentNotes }
+    if (rest.length === 0) delete subagentNotes[sessionId]
+    else subagentNotes[sessionId] = rest
+    return { ...current, subagentNotes }
+  })
+  return taken
+}
+
+export function removeChildNote(sessionId: string, id: string): void {
+  setState((current) => {
+    const rest = (current.subagentNotes[sessionId] ?? []).filter((item) => item.id !== id)
+    if (rest.length === (current.subagentNotes[sessionId] ?? []).length) return current
+    const subagentNotes = { ...current.subagentNotes }
+    if (rest.length === 0) delete subagentNotes[sessionId]
+    else subagentNotes[sessionId] = rest
+    return { ...current, subagentNotes }
+  })
+}
+
+export function forgetChildNotes(sessionId: string): void {
+  setState((current) => {
+    if (!(sessionId in current.subagentNotes) && !(sessionId in current.liveSubagent)) {
+      return current
+    }
+    return {
+      ...current,
+      liveSubagent: omitRecord(current.liveSubagent, sessionId),
+      subagentNotes: omitRecord(current.subagentNotes, sessionId),
+    }
   })
 }
 

@@ -6,9 +6,11 @@ import { color, columnFor, FONT, nativeTheme, radius, space, text } from "../../
 import { IconButton, Label, Thumbnail } from "../../ui/ui"
 import {
   canAnswer,
+  removeChildNote,
   removeQueued,
   setAttachments,
   useApp,
+  type ChildNote,
   type QueuedPrompt,
   type Session,
 } from "../../store"
@@ -97,6 +99,48 @@ function Queue({ sessionId, items }: { sessionId: string; items: QueuedPrompt[] 
   )
 }
 
+function Notes({ sessionId, items }: { sessionId: string; items: ChildNote[] }) {
+  if (items.length === 0) return null
+
+  return (
+    <div
+      testId="subagent-notes"
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: space.xs,
+        paddingTop: space.sm,
+      }}
+    >
+      {items.map((item) => (
+        <div
+          key={item.id}
+          testId={`subagent-note-${item.id}`}
+          style={{
+            display: "flex",
+            flexDirection: "row",
+            alignItems: "center",
+            gap: space.sm,
+            minWidth: 0,
+          }}
+        >
+          <Label truncate size={text.small} color={color.faint} grow>
+            {`${item.name}: ${item.text}`}
+          </Label>
+          <IconButton
+            icon="x"
+            size={18}
+            tooltip="Remove this note"
+            testId={`subagent-note-dismiss-${item.id}`}
+            tone={color.ghost}
+            onClick={() => removeChildNote(sessionId, item.id)}
+          />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 /** Unsent text per session. The composer remounts when its pane opens another
  *  session, so the draft cannot live in its state alone. */
 const drafts = new Map<string, string>()
@@ -131,6 +175,8 @@ export function Composer({
 
   const attached = state.attachments[session.id] ?? []
   const queued = state.queue[session.id] ?? []
+  const notes = state.subagentNotes[session.id] ?? []
+  const liveChild = state.liveSubagent[session.id]
   const hasContent = draft.trim().length > 0 || attached.length > 0
   const canSend = hasContent || queued.length > 0
   const readyToAnswer = canAnswer(state, session)
@@ -240,6 +286,7 @@ export function Composer({
         }}
       >
         <Queue sessionId={session.id} items={queued} />
+        <Notes sessionId={session.id} items={notes} />
         {attached.length > 0 ? (
           <div
             style={{
@@ -289,7 +336,9 @@ export function Composer({
             value={draft}
             placeholder={
               running
-                ? "Running · ⏎ to queue"
+                ? liveChild
+                  ? `${liveChild} · ⏎ to note`
+                  : "Running · ⏎ to queue"
                 : !hasContent && queued.length > 0
                   ? "⏎ sends the next queued prompt"
                   : readyToAnswer
