@@ -3241,6 +3241,32 @@ process.stdin.on("data", chunk => {
     await app.close()
   })
 
+  it("keeps a multi-line tool label on its one row", async () => {
+    const workspace = createWorkspace(tempDir(), "demo")
+    const session = createSession(workspace.id)
+    openSession(session.id, 0)
+    appendMessage(session.id, {
+      id: "heredoc",
+      kind: "tool",
+      at: Date.now(),
+      endedAt: Date.now(),
+      callId: "heredoc",
+      name: "shell",
+      label: "cat > review.md <<'EOF'\n# Review\n\n## Overall\nEOF · exit 0",
+      state: "ok",
+      output: "",
+    })
+
+    const { renderer, app } = await mount(1280, 800)
+
+    const painted = renderer.getPaintedText()
+    expect(painted.some((line) => line.includes("cat > review.md <<'EOF' # Review ## Overall EOF"))).toBe(true)
+    expect(painted.some((line) => line === "# Review")).toBe(false)
+    expect((await app.getByTestId("tool-heredoc").bounds()).height).toBeLessThanOrEqual(26)
+
+    await app.close()
+  })
+
   it("runs a whole turn against a subscription through the request shim", async () => {
     mkdirSync(DIR, { recursive: true })
     writeFileSync(
