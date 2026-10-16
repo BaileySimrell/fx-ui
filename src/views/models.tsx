@@ -126,7 +126,7 @@ export function ModelChoice({
 
       <ComboboxContent
         side="top"
-        align="start"
+        align="end"
         sideOffset={8}
         style={{ ...overlayStyle(space.xs, space.xs), width: 340 }}
       >

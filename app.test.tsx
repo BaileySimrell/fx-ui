@@ -3980,7 +3980,7 @@ process.stdin.on("data", chunk => {
     renderer.flush()
 
     const painted = renderer.getPaintedText().join("\n")
-    for (const section of ["MODELS", "RUNTIME", "EXTENSIONS", "ABOUT"]) {
+    for (const section of ["Models", "Runtime", "Extensions", "About"]) {
       expect(painted, section).toContain(section)
     }
     expect(await app.getByTestId("settings-page").count()).toBe(1)

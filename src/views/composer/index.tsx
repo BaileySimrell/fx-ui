@@ -83,7 +83,7 @@ function Queue({ sessionId, items }: { sessionId: string; items: QueuedPrompt[] 
           }}
         >
           <Label truncate size={text.small} color={color.faint} grow>
-            {item.steered ? `Steering: ${queuedLabel(item)}` : queuedLabel(item)}
+            {`${item.steered ? "Steering" : "Queued"}: ${queuedLabel(item)}`}
           </Label>
           {item.steered ? null : (
             <IconButton
