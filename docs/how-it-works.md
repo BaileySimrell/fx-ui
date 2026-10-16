@@ -105,12 +105,14 @@ undocumented requirements, written down in [PLATFORM.md](../PLATFORM.md).
 
 ### The fx CLI as the core
 
-*Run through the fx CLI* points `createFxAgent` at `fx acp` through its
+*Run through the fx CLI* points `createFxEngine` at `fx acp` through its
 `runtimeFactory`. That is the same core built with every provider, answering to
 whatever `fx login` stored in `~/.fx`, which helps with a sign-in this app does
 not carry. Tools, approvals, skills, MCP and checkpoints ride on the same ACP
 messages either way. Transport diagnostics are lost, since the CLI makes its
-own requests. It needs fx 0.0.7 or newer.
+own requests. It needs fx 0.0.7 or newer. libfx's native backend currently
+overrides that factory, so wherever the addon loads the setting has no effect;
+see [PLATFORM.md](../PLATFORM.md).
 
 ### Model picker
 
@@ -178,12 +180,10 @@ On a subscription the popover also shows the plan's usage, read off the
 headers of every reply. Codex sends the plan and each usage window with when it
 resets. Grok sends the requests and tokens left.
 
-During automatic compaction, “Compacting…” appears above the composer. The
-bundled libfx engine does not publish compaction notices over ACP, so the
-app recognizes its dedicated summary system prompt in outgoing model requests.
-This works before Gateway, Grok, or Codex routing. The indicator stays visible
-through summary requests and clears when the next ordinary model request
-starts, or when the turn ends, fails, or is cancelled. It is never restored
+During automatic compaction, “Compacting…” appears above the composer. libfx
+reports each compaction through its `hooks` as a model call whose purpose is
+`compaction`, whichever provider answers. The indicator shows while that call
+runs, and clears when it ends or when the turn ends, fails, or is cancelled. It is never restored
 from saved state. The fx CLI makes its requests outside this bridge and does
 not currently expose a compaction signal, so CLI mode has no indicator.
 
@@ -260,7 +260,7 @@ Nothing opens a browser mid-turn. A server that needs you appears as a notice,
 and you sign in when you choose to.
 
 MCP catalogs load up to 1,024 tools per server, with pagination and duplicate
-name checks. A small `libfx@0.0.10` patch adds an explicit catalog limit option;
+name checks. A small `libfx@0.0.14` patch adds an explicit catalog limit option;
 the SDK's default stays at 64. This matters for servers such as Linear, whose
 catalog is larger than the SDK default. The agent still has at most 64 host
 tool slots: it discovers MCP tools with `capability_search`, reads a schema
@@ -436,7 +436,6 @@ folders are looked for inside it instead of in your home folder.
 
 ```
 app.tsx              the shell: panes, split view, window shortcuts
-libfx.d.ts           types for the part of libfx this app calls
 src/store.ts         state, persistence, and the actions that mutate it
 
 src/agent/           what answers a turn

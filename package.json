@@ -16,7 +16,7 @@
     "@gpuix/native": "0.10.0",
     "@gpuix/react": "0.10.0",
     "jsonc-parser": "^3.3.1",
-    "libfx": "^0.0.11",
+    "libfx": "^0.0.14",
     "react": "^19.2.4"
   },
   "devDependencies": {
@@ -26,6 +26,6 @@
     "vitest": "^4.0.18"
   },
   "patchedDependencies": {
-    "libfx@0.0.11": "patches/libfx@0.0.11.patch"
+    "libfx@0.0.14": "patches/libfx@0.0.14.patch"
   }
 }

@@ -36,7 +36,6 @@ export type Route = {
   search?: boolean
   onSearch?: (step: SearchStep) => void
   onUsage?: (tokens: number) => void
-  onCompaction?: (active: boolean) => void
   onLimits?: (limits: PlanLimits) => void
 }
 
@@ -408,16 +407,6 @@ function requestBody(init?: RequestInit): Json {
   ) as Json
 }
 
-function isCompactionRequest(body: Json): boolean {
-  if (!Array.isArray(body.prompt)) return false
-  const prefix = "You are writing a summary for a separate assistant to continue later, not continuing the recorded conversation yourself."
-  return body.prompt.some((message) => {
-    if (message?.role !== "system") return false
-    const content = message.content
-    if (typeof content === "string") return content.startsWith(prefix)
-    return Array.isArray(content) && content.some((part) => part?.type === "text" && typeof part.text === "string" && part.text.startsWith(prefix))
-  })
-}
 
 export function providerFetch(
   base: typeof globalThis.fetch = globalThis.fetch,
@@ -440,8 +429,6 @@ export function providerFetch(
     if (!GATEWAY_LANGUAGE_MODEL_URLS.some((prefix) => url.startsWith(prefix))) {
       return base(input as RequestInfo, init)
     }
-    const observedBody = route.onCompaction ? requestBody(init) : undefined
-    if (observedBody) route.onCompaction?.(isCompactionRequest(observedBody))
     if (!provider || !model) {
       return watchUsage(await base(input as RequestInfo, init), route.onUsage)
     }
@@ -454,7 +441,7 @@ export function providerFetch(
       )
     }
 
-    const body = observedBody ?? requestBody(init)
+    const body = requestBody(init)
 
     const response = await base(PROVIDERS[provider].endpoint, {
       method: "POST",

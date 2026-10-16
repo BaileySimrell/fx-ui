@@ -267,12 +267,15 @@ which leaves the Codex and Grok bundles empty, and sets
 `fx` binary is the same core built with `builtin_providers.native` and has all
 three.
 
-### `createFxAgent` accepts an undocumented `runtimeFactory`
+### libfx's native backend ignores a host `runtimeFactory`
 
-It is called ahead of instantiating a backend, and libfx's own native path is
-written as exactly that, so it is the seam for running `fx acp` as the core
-instead. Host tools cross that seam as `libfx/tool_call` requests instead of as
-a native callback, so they keep working.
+The Wasm agent calls an undocumented `runtimeFactory` before it instantiates a
+backend, and fx-ui passes one to run `fx acp` as the core. The native path,
+which Node takes whenever the addon loads, sets its own `runtimeFactory` after
+the host's options, so the host's is never called. That holds in 0.0.11 and
+0.0.14 alike, and `createFxEngine`'s published types no longer list the option.
+Host tools would cross that seam as `libfx/tool_call` requests instead of as a
+native callback.
 
 ### `apiKey` is required even when the core will not use it
 

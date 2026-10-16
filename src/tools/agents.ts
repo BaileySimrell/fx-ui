@@ -1,4 +1,4 @@
-import { createFxAgent, type Agent, type AgentOptions } from "libfx"
+import { createFxEngine, type FxEngine, type FxNodeEngineOptions } from "libfx/node"
 
 import { backing } from "../agent/backing"
 import {
@@ -159,7 +159,7 @@ export function parseSubagentInput(input: unknown): SubagentCall {
 type NamedChild = {
   sessionId: string
   name: string
-  agent: Agent
+  agent: FxEngine
   child: Session
   instructions?: string
   busy: boolean
@@ -169,12 +169,12 @@ type NamedChild = {
 
 const namedChildren = new Map<string, NamedChild>()
 
-type AgentOpener = (options: AgentOptions) => Promise<Agent>
+type AgentOpener = (options: FxNodeEngineOptions) => Promise<FxEngine>
 
-let openAgent: AgentOpener = createFxAgent
+let openAgent: AgentOpener = createFxEngine
 
 export function setSubagentOpener(opener: AgentOpener | null): void {
-  openAgent = opener ?? createFxAgent
+  openAgent = opener ?? createFxEngine
 }
 
 export function resetNamedSubagents(): void {
@@ -182,7 +182,7 @@ export function resetNamedSubagents(): void {
     void child.agent.close().catch(() => {})
   }
   namedChildren.clear()
-  openAgent = createFxAgent
+  openAgent = createFxEngine
 }
 
 function childKey(sessionId: string, name: string): string {
@@ -228,7 +228,7 @@ function childInstructions(root: string, extra?: string): string {
 }
 
 async function collectTurn(
-  agent: Agent,
+  agent: FxEngine,
   prompt: string,
   signal: AbortSignal,
 ): Promise<{ text: string; stopReason: string }> {
@@ -301,7 +301,7 @@ async function namedChildFor(
   const handle: NamedChild = {
     sessionId: ctx.sessionId,
     name,
-    agent: null as unknown as Agent,
+    agent: null as unknown as FxEngine,
     child: prepared.child,
     instructions: input.instructions,
     busy: false,

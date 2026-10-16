@@ -1,3 +1,5 @@
+import type { FxHooks } from "libfx/node"
+
 import { cliRuntime } from "./cli"
 import { providerFetch, type SearchStep } from "./providers"
 import {
@@ -17,6 +19,7 @@ export type Backing = {
     fetch: typeof globalThis.fetch
     model?: string
     runtimeFactory?: typeof cliRuntime
+    hooks?: FxHooks
   }
   search: boolean
 }
@@ -46,11 +49,29 @@ export function backing(
         search,
         onSearch,
         onUsage,
-        onCompaction,
         onLimits: provider ? (limits) => setLimits(provider, limits) : undefined,
       }),
       ...(model ? { model } : {}),
       ...(state.useCli ? { runtimeFactory: cliRuntime } : {}),
+      ...(onCompaction ? { hooks: compactionHooks(onCompaction) } : {}),
+    },
+  }
+}
+
+/** libfx reports compaction as a model call whose purpose is "compaction". */
+export function compactionHooks(onCompaction: (active: boolean) => void): FxHooks {
+  const open = new Set<string>()
+  return {
+    onEvent(event) {
+      if (event.type === "model.start" && event.data.purpose === "compaction") {
+        open.add(`${event.executionId}:${event.data.modelCallId}`)
+        onCompaction(true)
+      } else if (
+        event.type === "model.end" &&
+        open.delete(`${event.executionId}:${event.data.modelCallId}`)
+      ) {
+        onCompaction(open.size > 0)
+      }
     },
   }
 }

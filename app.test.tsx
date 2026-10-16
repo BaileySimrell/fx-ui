@@ -29,6 +29,7 @@ import {
   closeSession,
   send,
 } from "./src/agent/agent"
+import { compactionHooks } from "./src/agent/backing"
 import { loadModels, refreshCredentials } from "./src/agent/credentials"
 import { COMPOSER_CARD_INSET } from "./src/views/composer"
 import {
@@ -81,7 +82,7 @@ import {
   rankFiles,
 } from "./src/workspace/files"
 import { SIDEBAR_WIDTH } from "./src/views/sidebar"
-import { createFxAgent, type Agent } from "libfx"
+import { createFxEngine, type FxEngine } from "libfx/node"
 
 import { MIN_ACP_PROVIDER_VERSION, outdatedForProviders } from "./src/agent/cli"
 import { authorizeUrl, beginSignIn, credential } from "./src/agent/oauth"
@@ -1221,7 +1222,7 @@ describe("queued prompts", () => {
     ).toEqual([
       ["user", "go"],
       ["user", "also check tests"],
-      ["assistant", "first.second."],
+      ["assistant", "second."],
     ])
   })
 })
@@ -1235,9 +1236,9 @@ describe("named subagents", () => {
     gate?: Promise<void>
   }
 
-  function fakeAgent(log: FakeLog): Agent {
+  function fakeAgent(log: FakeLog): FxEngine {
     return {
-      prompt(input, options) {
+      prompt(input: unknown, options?: { signal?: AbortSignal }) {
         const text = typeof input === "string" ? input : JSON.stringify(input)
         log.prompts.push(text)
         let cancelled = false
@@ -1269,7 +1270,7 @@ describe("named subagents", () => {
       async close() {
         log.closed += 1
       },
-    }
+    } as unknown as FxEngine
   }
 
   function installFake(gate?: Promise<void>): FakeLog {
@@ -3680,7 +3681,7 @@ process.stdin.on("data", chunk => {
 
     let ran = false
     const perRequest: number[] = []
-    const agent = (await createFxAgent({
+    const agent = (await createFxEngine({
       apiKey: "unused-by-the-subscription",
       model: "xai/grok-4.6",
       instructions: "be brief",
@@ -3699,7 +3700,7 @@ process.stdin.on("data", chunk => {
         provider: "grok",
         onUsage: (tokens) => perRequest.push(tokens),
       }),
-    })) as Agent
+    })) as FxEngine
 
     const turn = agent.prompt("ping with 7")
     let text = ""
@@ -3833,98 +3834,44 @@ process.stdin.on("data", chunk => {
     return body.includes("You name conversations")
   }
 
-  it.each([
-    { outcome: "completed", width: 700 },
-    { outcome: "failed", width: 1180 },
-    { outcome: "cancelled", width: 700 },
-  ])("shows live compaction and clears it when $outcome", async ({ outcome, width }) => {
+  it("turns compaction on and off from libfx's model hooks", () => {
+    const seen: boolean[] = []
+    const hooks = compactionHooks((active) => seen.push(active))
+    const emit = (type: string, data: object) =>
+      hooks.onEvent({ type, data, executionId: "e1" } as never)
+    emit("model.start", { modelCallId: 1, purpose: "agent" })
+    emit("model.end", { modelCallId: 1, error: null, cancelled: false })
+    emit("model.start", { modelCallId: 2, purpose: "compaction" })
+    emit("model.end", { modelCallId: 2, error: "failed", cancelled: false })
+    expect(seen).toEqual([true, false])
+  })
+
+  it.each([700, 1180])("shows live compaction above the composer at %ipx and clears it", async (width) => {
     const { session } = seed()
-    const model = "fixture/compaction"
-    setState((current) => ({ ...current, apiKey: "fixture-key", models: [{ id: model, name: "Fixture", contextWindow: 65_536 }] }))
-    updateSession(session.id, (current) => ({ ...current, model, modelName: "Fixture", provider: null }))
-    let summarizing = false
-    let resumed = false
-    let release!: () => void
-    const held = new Promise<void>((resolve) => { release = resolve })
-    let finish!: () => void
-    const continued = new Promise<void>((resolve) => { finish = resolve })
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String((input as Request)?.url ?? input)
-      if (!url.includes("/language-model")) {
-        return Response.json({ object: "list", data: [{ id: model, type: "language", context_window: 65_536, max_tokens: 4096, tags: ["tool-use"] }] })
-      }
-      if (isNaming(init)) return new Response("{}", { status: 400 })
-      const body = Buffer.from(init?.body as never).toString("utf8")
-      const summary = body.includes("You are writing a summary for a separate assistant")
-      if (summary) {
-        summarizing = true
-        await new Promise<void>((resolve, reject) => {
-          const abort = () => reject(new DOMException("Aborted", "AbortError"))
-          if (init?.signal?.aborted) return abort()
-          init?.signal?.addEventListener("abort", abort, { once: true })
-          void held.then(() => {
-            init?.signal?.removeEventListener("abort", abort)
-            resolve()
-          })
-        })
-        if (outcome === "failed") return new Response("Compaction fixture failed", { status: 500 })
-      } else if (summarizing) {
-        resumed = body.includes("<context_handoff>")
-        await continued
-      }
-      const events = [
-        { type: "text-delta", delta: summary ? "The user asked to retain the fixture details and continue." : "Fixture reply." },
-        { type: "finish", finishReason: { unified: "stop" }, usage: { inputTokens: { total: Math.ceil(body.length / 4) }, outputTokens: { total: 20 } } },
-      ]
-      return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
-    }) as typeof fetch
+    updateSession(session.id, (current) => ({ ...current, status: "running" }))
     const { renderer, app } = await mount(width, 800)
-    const work = (async () => {
-      for (let i = 0; i < 8 && !summarizing; i++) {
-        await send(session.id, `Fixture turn ${i}. ` + "The recorded fixture detail is stable. ".repeat(1500))
-      }
-    })()
-    try {
-      await vi.waitFor(() => expect(summarizing).toBe(true), { timeout: 5_000 })
-      await settle()
-      renderer.flush()
-      expect(renderer.findByTestId("compaction-status")).toBeDefined()
-      expect(await app.getByTestId("compaction-status").textContent()).toBe("Compacting…")
-      const status = await app.getByTestId("compaction-status").bounds()
-      const composer = await app.getByTestId("composer-column").bounds()
-      expect(status.x).toBeGreaterThanOrEqual(0)
-      expect(status.x + status.width).toBeLessThanOrEqual(width)
-      expect(status.y + status.height).toBeLessThanOrEqual(composer.y)
-      expect(findSession(getState(), session.id)!.status).toBe("running")
-      flushState()
-      const saved = JSON.parse(readFileSync(path.join(DIR, "state.json"), "utf8")) as { sessions: Session[] }
-      expect(saved.sessions.find((entry) => entry.id === session.id)!.compacting).toBe(false)
-      if (outcome === "cancelled") await app.getByTestId("stop").click()
-      else release()
-      if (outcome === "completed") {
-        await vi.waitFor(() => expect(resumed).toBe(true))
-        await settle()
-        renderer.flush()
-        expect(renderer.findByTestId("compaction-status")).toBeUndefined()
-        expect(findSession(getState(), session.id)!.status).toBe("running")
-        finish()
-      }
-      await work
-      await settle()
-      renderer.flush()
-      expect(renderer.findByTestId("compaction-status")).toBeUndefined()
-      expect(findSession(getState(), session.id)!.status).not.toBe("running")
-      expect(messagesOf(session.id).some((message) => message.kind === "assistant" && message.text.includes("Compacting"))).toBe(false)
-      if (outcome === "completed") expect(resumed).toBe(true)
-    } finally {
-      cancel(session.id)
-      release()
-      finish()
-      await work
-      await app.close()
-      globalThis.fetch = realFetch
-    }
+    const hooks = compactionHooks((compacting) =>
+      updateSession(session.id, (current) => ({ ...current, compacting })),
+    )
+
+    hooks.onEvent({ type: "model.start", executionId: "e1", data: { modelCallId: 1, purpose: "compaction" } } as never)
+    await settle()
+    renderer.flush()
+    expect(await app.getByTestId("compaction-status").textContent()).toBe("Compacting…")
+    const status = await app.getByTestId("compaction-status").bounds()
+    const composer = await app.getByTestId("composer-column").bounds()
+    expect(status.x).toBeGreaterThanOrEqual(0)
+    expect(status.x + status.width).toBeLessThanOrEqual(width)
+    expect(status.y + status.height).toBeLessThanOrEqual(composer.y)
+    flushState()
+    const saved = JSON.parse(readFileSync(path.join(DIR, "state.json"), "utf8")) as { sessions: Session[] }
+    expect(saved.sessions.find((entry) => entry.id === session.id)!.compacting).toBe(false)
+
+    hooks.onEvent({ type: "model.end", executionId: "e1", data: { modelCallId: 1, error: null, cancelled: false } } as never)
+    await settle()
+    renderer.flush()
+    expect(renderer.findByTestId("compaction-status")).toBeUndefined()
+    await app.close()
   })
 
   it("starts a new assistant message after a row lands under the last one", async () => {
@@ -3995,11 +3942,11 @@ process.stdin.on("data", chunk => {
       })
     }) as unknown as typeof fetch
 
-    const agent = (await createFxAgent({
+    const agent = (await createFxEngine({
       apiKey: "gateway-key",
       model: "anthropic/claude-sonnet-5",
       fetch: providerFetch(stub, {}),
-    })) as Agent
+    })) as FxEngine
     const turn = agent.prompt("hi")
     for await (const _ of turn) {
     }

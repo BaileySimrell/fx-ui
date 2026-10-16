@@ -2,11 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 import {
-  createFxAgent,
-  type Agent,
-  type StopReason,
-  type Turn,
-} from "libfx"
+  createFxEngine,
+  type FxEngine,
+  type FxStopReason,
+  type FxEngineTurn,
+} from "libfx/node"
 
 import {
   CHECKPOINT_DIR,
@@ -53,14 +53,14 @@ import { acquireMcp, MCP_CONFIG_FILE, pruneMcpGrants, resetMcp, type McpLease } 
 import { beginTurn, endTurn, forgetTurn } from "../workspace/turns"
 
 type Runtime = {
-  agent: Agent
+  agent: FxEngine
   model: string | null
   provider: ProviderId | null
   effort: string | null
   fast: boolean
   search: boolean
   commands: SkillCommand[]
-  turn: Turn | null
+  turn: FxEngineTurn | null
   mcp: McpLease
 }
 
@@ -168,10 +168,10 @@ async function nameSession(sessionId: string, prompt: string): Promise<void> {
   if (!back) return
 
   try {
-    const agent = (await createFxAgent({
+    const agent = (await createFxEngine({
       ...back.options,
       instructions: TITLE_INSTRUCTIONS,
-    })) as Agent
+    })) as FxEngine
     try {
       const turn = agent.prompt(`<request>\n${prompt.slice(0, 2_000)}\n</request>\n\nTitle:`)
       let raw = ""
@@ -207,7 +207,7 @@ function readCheckpoint(sessionId: string): Uint8Array | undefined {
   }
 }
 
-async function saveCheckpoint(sessionId: string, agent: Agent): Promise<void> {
+async function saveCheckpoint(sessionId: string, agent: FxEngine): Promise<void> {
   try {
     const bytes = await agent.checkpoint()
     mkdirSync(CHECKPOINT_DIR, { recursive: true })
@@ -332,7 +332,7 @@ async function runtimeFor(sessionId: string): Promise<Runtime> {
     skills: estimateTokens(skills.instructions, skills.tools),
     mcp: estimateTokens(mcp.instructions),
   })
-  const agent = (await createFxAgent({
+  const agent = (await createFxEngine({
     ...back.options,
     instructions: [...system, skills.instructions, mcp.instructions].filter(Boolean),
     tools: [
@@ -340,7 +340,7 @@ async function runtimeFor(sessionId: string): Promise<Runtime> {
       ...skills.tools.map((tool) => adopt(tool, toolContext)),
     ],
     checkpoint: readCheckpoint(sessionId),
-  })) as Agent
+  })) as FxEngine
 
   if (skills.names.length > 0 || mcp.names.length > 0) {
     const loaded = [
@@ -449,7 +449,7 @@ function failedRequest(sessionId: string): { id: string; text: string } | null {
   return null
 }
 
-function noticeText(reason: StopReason): string | null {
+function noticeText(reason: FxStopReason): string | null {
   switch (reason) {
     case "cancelled":
       return "Stopped."
