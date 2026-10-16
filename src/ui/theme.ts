@@ -30,6 +30,9 @@ export const color = {
 
   danger: "#f36356",
   dangerSurface: "#f363561f",
+
+  added: "#6cc58a",
+  removed: "#f36356",
 } as const
 
 export const space = {

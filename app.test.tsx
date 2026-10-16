@@ -6452,9 +6452,9 @@ process.stdin.on("data", chunk => {
 
     await app.getByTestId("tool-sub1").waitFor()
     const painted = () => renderer.getPaintedText().join(" ")
-    expect(painted()).toContain("subagent")
+    expect(painted()).toContain("Subagent")
     expect(painted()).toContain("survey the auth flow")
-    expect(painted()).toContain("read_file ×2")
+    expect(painted()).toContain("Read ×2")
     expect(painted()).not.toContain("auth flow lives in")
     expect(await app.getByTestId("subagent-step-s1").count()).toBe(0)
 
@@ -6463,7 +6463,7 @@ process.stdin.on("data", chunk => {
       expect(painted()).toContain("The auth flow lives in src/auth"),
     )
     // Expanded, every nested call shows as its own row with a real label,
-    // not just folded into the "read_file ×2" count.
+    // not just folded into the "Read ×2" count.
     await app.getByTestId("subagent-step-s1").waitFor()
     await app.getByTestId("subagent-step-s2").waitFor()
     await app.getByTestId("subagent-step-s3").waitFor()

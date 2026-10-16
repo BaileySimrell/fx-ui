@@ -22,6 +22,7 @@ export function Label({
   truncate,
   lines,
   mono,
+  shrink,
 }: {
   children: ReactNode
   size?: number
@@ -32,6 +33,8 @@ export function Label({
   lines?: number
   /** For paths, commands and other literal text. */
   mono?: boolean
+  /** Gives way to its siblings without growing to fill the row. */
+  shrink?: boolean
 }) {
   return (
     <text
@@ -42,6 +45,7 @@ export function Label({
         color: textColor,
         lineHeight: Math.round(size * 1.5),
         ...(grow ? { flexGrow: 1, minWidth: 0 } : null),
+        ...(shrink ? { flexShrink: 1, minWidth: 0 } : null),
         ...(truncate
           ? { whiteSpace: "nowrap" as const, textOverflow: "ellipsis" as const }
           : null),
