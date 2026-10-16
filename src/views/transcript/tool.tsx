@@ -129,7 +129,7 @@ function SubagentStepRow({
         <Label size={text.micro} color={color.tertiary}>
           {step.name}
         </Label>
-        <Label grow truncate size={text.micro} color={color.faint}>
+        <Label grow truncate mono size={text.micro} color={color.faint}>
           {step.label !== step.name ? step.label : ""}
         </Label>
         {step.state === "running" ? (
@@ -367,7 +367,7 @@ function ToolRow({
         <Label size={text.small} color={nameColor}>
           {message.name}
         </Label>
-        <Label grow truncate size={text.small} color={color.faint}>
+        <Label grow truncate mono size={text.small} color={color.faint}>
           {message.label}
         </Label>
         <Label size={text.micro} color={result.tone}>

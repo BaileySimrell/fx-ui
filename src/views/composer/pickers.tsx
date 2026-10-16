@@ -386,7 +386,7 @@ function BackgroundRow({ entry }: { entry: BackgroundCommand }) {
             backgroundColor: live ? color.tertiary : entry.exit === 0 ? color.faint : color.danger,
           }}
         />
-        <Label grow truncate size={text.small} color={live ? color.text : color.tertiary}>
+        <Label grow truncate mono size={text.small} color={live ? color.text : color.tertiary}>
           {entry.command}
         </Label>
         <Label size={text.micro} color={color.faint}>

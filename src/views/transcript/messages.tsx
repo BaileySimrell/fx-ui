@@ -46,10 +46,10 @@ export function UserMessage({ message }: { message: Extract<Message, { kind: "us
           {message.text ? (
             <text
               style={{
-                fontSize: text.body,
+                fontSize: text.prose,
                 fontFamily: FONT,
                 color: color.text,
-                lineHeight: 21,
+                lineHeight: 22,
               }}
             >
               {message.text}
