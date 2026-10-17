@@ -50,7 +50,7 @@ import { expandMcpValue } from "../workspace/mcp/variables"
 import {
   color,
   columnFor,
-  FONT,
+  MONO,
   nativeTheme,
   PANE_PADDING,
   radius,
@@ -286,7 +286,7 @@ function MultilineField({
           flexGrow: 1,
           minWidth: 0,
           fontSize: text.small,
-          fontFamily: FONT,
+          fontFamily: MONO,
           color: color.text,
         }}
       />
