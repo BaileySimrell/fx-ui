@@ -6,7 +6,7 @@ import { color, FONT, nativeTheme, radius, space, text } from "../../ui/theme"
 import { Button, IconButton, Label, Thumbnail } from "../../ui/ui"
 import { openExternally } from "../../agent/oauth"
 import { removeMessage, setSettings, type Message } from "../../store"
-import { GUTTER, Gutter, HoldTail, Row } from "./shared"
+import { Gutter, HoldTail, Row } from "./shared"
 
 const IMAGE_SIZE = 80
 
@@ -17,23 +17,16 @@ export function UserMessage({ message }: { message: Extract<Message, { kind: "us
         style={{
           display: "flex",
           flexDirection: "row",
-          alignItems: "flex-start",
-          gap: space.md,
+          paddingTop: space.md + 2,
+          paddingBottom: space.md + 2,
+          paddingLeft: space.lg + 2,
+          paddingRight: space.lg + 2,
+          borderRadius: radius.lg,
+          borderWidth: 1,
+          borderColor: color.border,
+          backgroundColor: color.raised,
         }}
       >
-        <text
-          style={{
-            width: GUTTER - space.md,
-            flexShrink: 0,
-            fontSize: text.body,
-            fontFamily: FONT,
-            color: color.tertiary,
-            lineHeight: 21,
-            userSelect: "none",
-          }}
-        >
-          ❯
-        </text>
         <div
           style={{
             display: "flex",
@@ -46,10 +39,10 @@ export function UserMessage({ message }: { message: Extract<Message, { kind: "us
           {message.text ? (
             <text
               style={{
-                fontSize: text.body,
+                fontSize: text.prose,
                 fontFamily: FONT,
                 color: color.text,
-                lineHeight: 21,
+                lineHeight: 22,
               }}
             >
               {message.text}

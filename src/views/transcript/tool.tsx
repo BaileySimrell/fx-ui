@@ -33,6 +33,48 @@ const TOOL_ICONS: Record<string, IconName> = {
   x_search: "search",
 }
 
+const TOOL_VERBS: Record<string, string> = {
+  ask_user_question: "Ask",
+  capability_search: "Find capability",
+  edit_file: "Edit",
+  git_diff: "Git diff",
+  git_log: "Git log",
+  git_status: "Git status",
+  glob_files: "Find files",
+  grep_files: "Search",
+  install_skill: "Install skill",
+  list_files: "List",
+  mcp_call_tool: "MCP",
+  mcp_features: "MCP",
+  mcp_select_tool: "MCP",
+  read_file: "Read",
+  read_tool_result: "Read result",
+  shell: "Run",
+  skill: "Skill",
+  subagent: "Subagent",
+  vision: "View image",
+  web_fetch: "Fetch",
+  web_search: "Web search",
+  write_file: "Write",
+  x_search: "Search X",
+}
+
+/** MCP tools keep their own names; only this app's tools have a verb. */
+function verb(name: string): string {
+  return TOOL_VERBS[name] ?? name
+}
+
+function diffStats(patch: string): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const line of patch.split("\n")) {
+    if (line.startsWith("+++") || line.startsWith("---")) continue
+    if (line.startsWith("+")) added += 1
+    else if (line.startsWith("-")) removed += 1
+  }
+  return { added, removed }
+}
+
 function duration(from: number, to: number | undefined): string {
   if (!to) return ""
   const seconds = (to - from) / 1000
@@ -58,7 +100,7 @@ function outcome(message: Extract<Message, { kind: "tool" }>): {
 function toolSummary(steps: SubagentStep[] | undefined): string {
   if (!steps || steps.length === 0) return ""
   const counts = new Map<string, number>()
-  for (const step of steps) counts.set(step.name, (counts.get(step.name) ?? 0) + 1)
+  for (const step of steps) counts.set(verb(step.name), (counts.get(verb(step.name)) ?? 0) + 1)
   return [...counts.entries()]
     .map(([name, count]) => (count > 1 ? `${name} ×${count}` : name))
     .join(" · ")
@@ -127,9 +169,9 @@ function SubagentStepRow({
       >
         <Icon name={TOOL_ICONS[step.name] ?? "box"} size={11} color={color.ghost} />
         <Label size={text.micro} color={color.tertiary}>
-          {step.name}
+          {verb(step.name)}
         </Label>
-        <Label grow truncate size={text.micro} color={color.faint}>
+        <Label grow truncate mono size={text.micro} color={color.faint}>
           {step.label !== step.name ? step.label : ""}
         </Label>
         {step.state === "running" ? (
@@ -213,7 +255,7 @@ function SubagentCard({ message }: { message: Extract<Message, { kind: "tool" }>
             color={message.state === "error" ? color.danger : color.secondary}
           />
           <Label size={text.small} color={color.secondary}>
-            subagent
+            Subagent
           </Label>
           <Label grow truncate size={text.small} color={color.text}>
             {message.label.replace(/ · [^·]+$/, "")}
@@ -338,6 +380,7 @@ function ToolRow({
         ? color.tertiary
         : color.secondary
   const result = outcome(message)
+  const stats = message.patch ? diffStats(message.patch) : null
 
   return (
     <Row>
@@ -365,14 +408,21 @@ function ToolRow({
           />
         </Gutter>
         <Label size={text.small} color={nameColor}>
-          {message.name}
+          {verb(message.name)}
         </Label>
-        <Label grow truncate size={text.small} color={color.faint}>
+        <Label shrink truncate mono size={text.small} color={color.faint}>
           {message.label}
         </Label>
+        {stats ? (
+          <div style={{ display: "flex", flexDirection: "row", gap: space.xs, flexShrink: 0 }}>
+            <Label size={text.micro} color={color.added}>{`+${stats.added}`}</Label>
+            <Label size={text.micro} color={color.removed}>{`−${stats.removed}`}</Label>
+          </div>
+        ) : null}
         <Label size={text.micro} color={result.tone}>
           {result.label}
         </Label>
+        <div style={{ flexGrow: 1 }} />
         {hasBody ? (
           <Icon
             name={expanded ? "chevronDown" : "chevronRight"}

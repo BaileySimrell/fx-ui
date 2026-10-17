@@ -130,9 +130,14 @@ function WorkspaceRow({
           size={11}
           color={color.ghost}
         />
-        <Label grow truncate size={text.body} color={active ? color.text : color.secondary}>
-          {workspace.name}
-        </Label>
+        <Explain lines={[shortPath(workspace.path)]} side="right">
+          <div style={{ display: "flex", flexShrink: 1, minWidth: 0 }}>
+            <Label truncate size={text.body} color={active ? color.text : color.secondary}>
+              {workspace.name}
+            </Label>
+          </div>
+        </Explain>
+        <div style={{ flexGrow: 1 }} />
         {hovered ? (
           <IconButton
             icon="x"
@@ -143,7 +148,7 @@ function WorkspaceRow({
               setDialog({ kind: "remove-workspace", workspaceId: workspace.id })
             }
           />
-        ) : (
+        ) : active ? null : (
           <div style={{ paddingRight: space.sm }}>
             <Label size={text.micro} color={color.ghost}>
               {String(sessionCount)}
@@ -151,13 +156,6 @@ function WorkspaceRow({
           </div>
         )}
       </div>
-      {active ? (
-        <div style={{ paddingLeft: 11 + space.sm, paddingBottom: 2 }}>
-          <Label truncate size={text.micro} color={color.ghost}>
-            {shortPath(workspace.path)}
-          </Label>
-        </div>
-      ) : null}
     </div>
   )
 }

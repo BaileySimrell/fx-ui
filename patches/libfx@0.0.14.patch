@@ -1,8 +1,10 @@
 diff --git a/mcp.js b/mcp.js
-index fea6efb751b90991b8b7934ea3acc88b4b16ec18..8a3cf4d4d32313d4f4258684dc626fa193752a3b 100644
+index e2a7ea548468fbe87b3c38fd0ed4c96091eca35a..534887818f6f55ee6cec221d06f3315bb8b31173 100644
 --- a/mcp.js
 +++ b/mcp.js
-@@ -31,4 +31,8 @@ function appendInstruction(parts, label, text) {
+@@ -29,6 +29,10 @@ function appendInstruction(parts, label, text) {
+ }
+ 
  export async function createMcpAdapter(client, options = {}) {
 +  const toolLimit = options.maxTools ?? maxTools;
 +  if (!Number.isInteger(toolLimit) || toolLimit < 1 || toolLimit > 1024) {
@@ -11,7 +13,7 @@ index fea6efb751b90991b8b7934ea3acc88b4b16ec18..8a3cf4d4d32313d4f4258684dc626fa1
    if (!client || typeof client.listTools !== "function" || typeof client.callTool !== "function") {
      throw new TypeError("MCP client must provide listTools() and callTool()");
    }
-@@ -43,7 +47,8 @@ export async function createMcpAdapter(client, options = {}) {
+@@ -48,7 +52,8 @@ export async function createMcpAdapter(client, options = {}) {
      if (page >= maxTools) throw new RangeError("MCP tool pagination exceeded its page limit");
      const listed = await client.listTools(cursor === undefined ? undefined : { cursor });
      const tools = Array.isArray(listed) ? listed : listed?.tools;
@@ -21,3 +23,16 @@ index fea6efb751b90991b8b7934ea3acc88b4b16ec18..8a3cf4d4d32313d4f4258684dc626fa1
      catalog.push(...tools);
      cursor = Array.isArray(listed) ? undefined : listed.nextCursor;
      if (cursor === undefined || cursor === null) break;
+diff --git a/types/mcp.d.ts b/types/mcp.d.ts
+index 6585eacc1f7e92dcb07c2da8386d401717e487de..e9f87e9cf386d6e26ed03b66e5c0496d88b9e119 100644
+--- a/types/mcp.d.ts
++++ b/types/mcp.d.ts
+@@ -27,6 +27,8 @@ export interface McpAdapterOptions {
+   propagateCorrelation?: boolean;
+   /** Prepended to each tool name: letters, digits, `_`, or `-`. */
+   prefix?: string;
++  /** Most tools to load from the server, 1 to 1024. Default 64. */
++  maxTools?: number;
+   /** Resource URIs whose text becomes instructions. */
+   resources?: readonly string[];
+   /** Prompts whose text becomes instructions: a name, or a `getPrompt()` request. */

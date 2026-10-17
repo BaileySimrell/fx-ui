@@ -1,4 +1,4 @@
-import { forwardRef, useRef, useState } from "react"
+import { forwardRef, useState } from "react"
 import { motion, useGpuix, type MotionTransition, type PublicInstance } from "@gpuix/react"
 import type { EventPayload } from "@gpuix/native"
 import {
@@ -27,7 +27,8 @@ import {
 } from "../../store"
 import { ModelChoice, keyOf } from "../models"
 
-const MONOSPACE_ADVANCE = 0.6
+/** A generous average advance for short lowercase labels in the UI face. */
+const LABEL_ADVANCE = 0.65
 
 export const MODES: { value: PermissionMode; label: string; hint: string }[] = [
   { value: "ask", label: "Ask", hint: "Every edit and command asks" },
@@ -114,7 +115,7 @@ export function ModelPicker({ session, maxWidth }: { session: Session; maxWidth:
 
 function effortTriggerWidth(options: string[]): number {
   const widest = options.reduce((longest, option) => Math.max(longest, option.length), 0)
-  return Math.ceil(widest * MONOSPACE_ADVANCE * text.micro) + space.sm * 2
+  return Math.ceil(widest * LABEL_ADVANCE * text.micro) + space.sm * 3 + 11
 }
 
 export function FastToggle({ session }: { session: Session }) {
@@ -329,6 +330,7 @@ export function EffortPicker({ session }: { session: Session }) {
           <Label size={text.micro} color={color.tertiary}>
             {value}
           </Label>
+          <Icon name="chevronDown" size={11} color={color.ghost} />
         </Chip>
       </SelectTrigger>
 
@@ -386,7 +388,7 @@ function BackgroundRow({ entry }: { entry: BackgroundCommand }) {
             backgroundColor: live ? color.tertiary : entry.exit === 0 ? color.faint : color.danger,
           }}
         />
-        <Label grow truncate size={text.small} color={live ? color.text : color.tertiary}>
+        <Label grow truncate mono size={text.small} color={live ? color.text : color.tertiary}>
           {entry.command}
         </Label>
         <Label size={text.micro} color={color.faint}>
@@ -653,33 +655,31 @@ const ATTACH_ACTIONS = [
   { value: "mention", label: "Mention a file", hint: "@" },
 ]
 
-type FilePanel = { promptForPaths?: (elementId: number, multiple: boolean) => void }
+type FilePanel = {
+  promptForPaths?: (options?: { files?: boolean; multiple?: boolean; prompt?: string }) => Promise<string[] | null>
+}
 
 export function AttachMenu({ session, onMention }: { session: Session; onMention: () => void }) {
   const panel = useGpuix().renderer as unknown as FilePanel | null
-  const trigger = useRef<PublicInstance>(null)
 
-  const choose = () => {
-    if (panel?.promptForPaths && trigger.current) panel.promptForPaths(trigger.current.id, true)
-    else void chooseImages(session.id)
+  const choose = async () => {
+    if (!panel?.promptForPaths) return void chooseImages(session.id)
+    const paths = await panel.promptForPaths({ files: true, multiple: true, prompt: "Attach" })
+    if (paths?.length) attachImages(session.id, paths)
   }
 
   return (
     <Select
       value=""
       onValueChange={(action) => {
-        if (action === "choose") choose()
+        if (action === "choose") void choose()
         else if (action === "paste") void pasteImage(session.id)
         else onMention()
       }}
     >
       <SelectTrigger asChild>
         <div
-          ref={trigger}
           testId="attach-file"
-          onChange={(event: { value?: string }) =>
-            attachImages(session.id, (event.value ?? "").split("\n").filter(Boolean))
-          }
           style={{
             display: "flex",
             alignItems: "center",

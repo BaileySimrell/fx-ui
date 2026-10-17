@@ -105,12 +105,14 @@ undocumented requirements, written down in [PLATFORM.md](../PLATFORM.md).
 
 ### The fx CLI as the core
 
-*Run through the fx CLI* points `createFxAgent` at `fx acp` through its
+*Run through the fx CLI* points `createFxEngine` at `fx acp` through its
 `runtimeFactory`. That is the same core built with every provider, answering to
 whatever `fx login` stored in `~/.fx`, which helps with a sign-in this app does
 not carry. Tools, approvals, skills, MCP and checkpoints ride on the same ACP
 messages either way. Transport diagnostics are lost, since the CLI makes its
-own requests. It needs fx 0.0.7 or newer.
+own requests. It needs fx 0.0.7 or newer. libfx's native backend currently
+overrides that factory, so wherever the addon loads the setting has no effect;
+see [PLATFORM.md](../PLATFORM.md).
 
 ### Model picker
 
@@ -178,12 +180,10 @@ On a subscription the popover also shows the plan's usage, read off the
 headers of every reply. Codex sends the plan and each usage window with when it
 resets. Grok sends the requests and tokens left.
 
-During automatic compaction, “Compacting…” appears above the composer. The
-bundled libfx engine does not publish compaction notices over ACP, so the
-app recognizes its dedicated summary system prompt in outgoing model requests.
-This works before Gateway, Grok, or Codex routing. The indicator stays visible
-through summary requests and clears when the next ordinary model request
-starts, or when the turn ends, fails, or is cancelled. It is never restored
+During automatic compaction, “Compacting…” appears above the composer. libfx
+reports each compaction through its `hooks` as a model call whose purpose is
+`compaction`, whichever provider answers. The indicator shows while that call
+runs, and clears when it ends or when the turn ends, fails, or is cancelled. It is never restored
 from saved state. The fx CLI makes its requests outside this bridge and does
 not currently expose a compaction signal, so CLI mode has no indicator.
 
@@ -264,7 +264,7 @@ Nothing opens a browser mid-turn. A server that needs you appears as a notice,
 and you sign in when you choose to.
 
 MCP catalogs load up to 1,024 tools per server, with pagination and duplicate
-name checks. A small `libfx@0.0.10` patch adds an explicit catalog limit option;
+name checks. A small `libfx@0.0.14` patch adds an explicit catalog limit option;
 the SDK's default stays at 64. This matters for servers such as Linear, whose
 catalog is larger than the SDK default. The agent still has at most 64 host
 tool slots: it discovers MCP tools with `capability_search`, reads a schema
@@ -276,7 +276,7 @@ that id and endpoint.
 ### Images
 
 ⌘V pastes an image from the clipboard, such as a screenshot or a copied image,
-through the [patched gpuix build](#the-patched-gpuix-binary). In the
+which gpuix hands on when the clipboard holds no text. In the
 + menu, *Paste image* reads the clipboard directly, which also takes an
 image file copied in Finder whatever text that copy carries. *Choose images…*
 picks them from disk, and `@screenshot.png` mentions one in the workspace.
@@ -307,13 +307,21 @@ speech bubble in its place means it is waiting on you, for an approval or an
 answer. A turn does not survive quitting the app: the conversation picks up
 from the last finished turn.
 
-### Queued prompts
+### Steering and queued prompts
 
-While a turn is running, Enter puts what you typed (and any attached images)
-on a list above the composer instead of sending it. × takes one off. A turn
-that finishes successfully sends the next item; stopping the turn, a failed
-request, a refusal, or hitting the output or step limit leaves the list.
-Enter on an empty composer sends the next one once nothing is running.
+While a turn is running, Enter steers it: plain text goes into the running turn
+through libfx's `turn.steer()`, which the model reads at its next safe boundary
+without losing the response in flight or finished tool work. The message shows
+in the transcript as soon as libfx accepts it. Until then it waits above the
+composer marked *Steering*, and it cannot be taken back.
+
+Images, skill commands and `@` mentions cannot steer, since they need the
+expansion a fresh turn gives them, so they go on a list above the composer
+instead, and so does anything the turn refuses. × takes one off. A turn that
+finishes successfully sends the next item; stopping the turn, a failed request,
+a refusal, or hitting the output or step limit leaves the list. Enter on an
+empty composer sends the next one once nothing is running. A named subagent
+that is working takes a note instead, as below.
 
 ### Copying an answer
 
@@ -428,51 +436,10 @@ directory, which is what the tests and the screenshot script use so they never
 touch your real workspaces. While it is set, the `.claude` and `.agents` skill
 folders are looked for inside it instead of in your home folder.
 
-## The patched gpuix binary
-
-The app runs its own build of `@gpuix/native` 0.7.0 with three changes, from
-`patches/gpuix-native.diff`:
-
-- The text field draws the caret at the height of its own font instead of the
-  full 26px row, so a wrapped draft does not get a caret twice the size of its
-  text.
-- The text field binds ⌘V to its own paste and used to swallow the key even
-  when the clipboard held only an image. When there is no text to paste, the
-  key now carries on to `onKeyDown`.
-- The renderer gains `promptForPaths(elementId, multiple)`, which opens GPUI's
-  own macOS file panel and reports the chosen paths as a `change` event on that
-  element, so choosing images does not wait for `osascript` to build a panel.
-
-`vendor/gpuix-native.darwin-arm64.node` is that build, and `postinstall` copies
-it next to the package's loader, which tries that path before the published
-binary. It is built with GPUI's `runtime_shaders` because this machine's Xcode
-has no Metal toolchain, so its shaders compile when the window opens instead of
-at build time. It is linked against the macOS 26.5 SDK, like the published
-binary. macOS 27 refuses an addon linked against its own beta SDK, and the
-loader then falls back to the published binary without a word, which the ⌘V
-test is there to catch. To rebuild it:
-
-```sh
-git clone https://github.com/remorses/gpuix && cd gpuix
-git checkout @gpuix/native@0.7.0
-git submodule update --init --depth 1 zed
-git apply ../fx-ui/patches/gpuix-native.diff
-cd packages/native
-export DEVELOPER_DIR=/Library/Developer/CommandLineTools
-export SDKROOT=$DEVELOPER_DIR/SDKs/MacOSX26.5.sdk
-rustup run 1.97.1 cargo build --release --features gpui_platform/runtime_shaders
-cp target/release/libgpuix_native.dylib ../../../fx-ui/vendor/gpuix-native.darwin-arm64.node
-```
-
-Drop the feature once `xcodebuild -downloadComponent MetalToolchain` has run,
-to match the published build exactly. Upgrading gpuix means redoing this, or
-deleting all of it if upstream takes the change.
-
 ## Where the code lives
 
 ```
 app.tsx              the shell: panes, split view, window shortcuts
-libfx.d.ts           types for the part of libfx this app calls
 src/store.ts         state, persistence, and the actions that mutate it
 
 src/agent/           what answers a turn

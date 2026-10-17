@@ -9,7 +9,7 @@ import {
 } from "@gpuix/react/tooltip"
 
 import { Icon, type IconName } from "./icons"
-import { color, FONT, nativeTheme, radius, space, text } from "./theme"
+import { color, FONT, MONO, nativeTheme, radius, space, text } from "./theme"
 
 export { TooltipProvider }
 
@@ -21,6 +21,8 @@ export function Label({
   grow,
   truncate,
   lines,
+  mono,
+  shrink,
 }: {
   children: ReactNode
   size?: number
@@ -29,16 +31,21 @@ export function Label({
   grow?: boolean
   truncate?: boolean
   lines?: number
+  /** For paths, commands and other literal text. */
+  mono?: boolean
+  /** Gives way to its siblings without growing to fill the row. */
+  shrink?: boolean
 }) {
   return (
     <text
       style={{
         fontSize: size,
-        fontFamily: FONT,
+        fontFamily: mono ? MONO : FONT,
         fontWeight: weight,
         color: textColor,
         lineHeight: Math.round(size * 1.5),
         ...(grow ? { flexGrow: 1, minWidth: 0 } : null),
+        ...(shrink ? { flexShrink: 1, minWidth: 0 } : null),
         ...(truncate
           ? { whiteSpace: "nowrap" as const, textOverflow: "ellipsis" as const }
           : null),

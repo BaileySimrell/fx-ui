@@ -29,6 +29,7 @@ import {
   closeSession,
   send,
 } from "./src/agent/agent"
+import { compactionHooks } from "./src/agent/backing"
 import { loadModels, refreshCredentials } from "./src/agent/credentials"
 import { COMPOSER_CARD_INSET } from "./src/views/composer"
 import {
@@ -85,7 +86,7 @@ import {
   rankFiles,
 } from "./src/workspace/files"
 import { SIDEBAR_WIDTH } from "./src/views/sidebar"
-import { createFxAgent, type Agent } from "libfx"
+import { createFxEngine, type FxEngine } from "libfx/node"
 
 import { MIN_ACP_PROVIDER_VERSION, outdatedForProviders } from "./src/agent/cli"
 import { authorizeUrl, beginSignIn, credential } from "./src/agent/oauth"
@@ -1124,6 +1125,110 @@ describe("queued prompts", () => {
       messagesOf(session.id).some((message) => message.kind === "user" && message.text === "do this next"),
     ).toBe(false)
   })
+
+  it("steers a running turn with Return, and shows the message once libfx accepts it", async () => {
+    mkdirSync(DIR, { recursive: true })
+    writeFileSync(
+      path.join(DIR, "providers.json"),
+      JSON.stringify({
+        grok: {
+          accessToken: "tok",
+          refreshToken: "r",
+          expiresAt: Date.now() + 3_600_000,
+          accountId: null,
+          account: "someone@example.com",
+        },
+      }),
+    )
+    const workspace = createWorkspace(tempDir(), "demo")
+    const session = createSession(workspace.id)
+    setState((current) => ({
+      ...current,
+      apiKey: null,
+      models: [{ id: "grok-4.6", name: "Grok 4.6", provider: "grok", efforts: [] }],
+    }))
+    updateSession(session.id, (current) => ({
+      ...current,
+      model: "grok-4.6",
+      modelName: "Grok 4.6",
+      provider: "grok",
+    }))
+
+    const frames = (text: string) =>
+      new Response(
+        [
+          { type: "response.output_text.delta", delta: text },
+          { type: "response.completed", response: { usage: { input_tokens: 1, output_tokens: 1 } } },
+        ]
+          .map((line) => `data: ${JSON.stringify(line)}\n\n`)
+          .join("") + "data: [DONE]\n\n",
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      )
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    let arrived!: () => void
+    const firstRequest = new Promise<void>((resolve) => {
+      arrived = resolve
+    })
+    const bodies: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String((input as Request)?.url ?? input)
+      if (url.includes("cli-chat-proxy.grok.com") && !url.includes("/responses")) {
+        return Response.json({
+          data: [
+            { model: "grok-4.6", name: "Grok 4.6", api_backend: "responses", context_window: 500_000 },
+          ],
+        })
+      }
+      if (!url.includes("/responses")) {
+        return Response.json({
+          object: "list",
+          data: [{ id: "xai/grok-4.6", type: "language", released: 1, tags: ["tool-use"] }],
+        })
+      }
+      const body = String(init?.body ?? "")
+      if (body.includes("<request>")) return frames("A title")
+      bodies.push(body)
+      if (bodies.length === 1) {
+        arrived()
+        await gate
+        return frames("first.")
+      }
+      return frames("second.")
+    }) as unknown as typeof fetch
+
+    try {
+      await refreshCredentials()
+      const turn = send(session.id, "go")
+      await firstRequest
+
+      await send(session.id, "also check tests")
+      const queued = getState().queue[session.id] ?? []
+      expect(queued.map((item) => [item.text, item.steered])).toEqual([["also check tests", true]])
+
+      release()
+      await turn
+    } finally {
+      globalThis.fetch = realFetch
+      await closeSession(session.id)
+    }
+
+    expect(bodies).toHaveLength(2)
+    expect(bodies[1]).toContain("also check tests")
+    expect(getState().queue[session.id]).toBeUndefined()
+    expect(
+      messagesOf(session.id)
+        .filter((message) => message.kind === "user" || message.kind === "assistant")
+        .map((message) => [message.kind, message.text]),
+    ).toEqual([
+      ["user", "go"],
+      ["user", "also check tests"],
+      ["assistant", "second."],
+    ])
+  })
 })
 
 describe("named subagents", () => {
@@ -1135,9 +1240,9 @@ describe("named subagents", () => {
     gate?: Promise<void>
   }
 
-  function fakeAgent(log: FakeLog): Agent {
+  function fakeAgent(log: FakeLog): FxEngine {
     return {
-      prompt(input, options) {
+      prompt(input: unknown, options?: { signal?: AbortSignal }) {
         const text = typeof input === "string" ? input : JSON.stringify(input)
         log.prompts.push(text)
         let cancelled = false
@@ -1169,7 +1274,7 @@ describe("named subagents", () => {
       async close() {
         log.closed += 1
       },
-    }
+    } as unknown as FxEngine
   }
 
   function installFake(gate?: Promise<void>): FakeLog {
@@ -2936,8 +3041,8 @@ describeNative("fx app", () => {
 
     const bounds = renderer.getElementBounds(strip!.id)!
     renderer.nativeSimulateScrollWheel(
-      bounds[0] + bounds[2] / 2,
-      bounds[1] + bounds[3] / 2,
+      bounds.x + bounds.width / 2,
+      bounds.y + bounds.height / 2,
       400,
       0,
     )
@@ -3697,7 +3802,7 @@ process.stdin.on("data", chunk => {
 
     let ran = false
     const perRequest: number[] = []
-    const agent = (await createFxAgent({
+    const agent = (await createFxEngine({
       apiKey: "unused-by-the-subscription",
       model: "xai/grok-4.6",
       instructions: "be brief",
@@ -3716,7 +3821,7 @@ process.stdin.on("data", chunk => {
         provider: "grok",
         onUsage: (tokens) => perRequest.push(tokens),
       }),
-    })) as Agent
+    })) as FxEngine
 
     const turn = agent.prompt("ping with 7")
     let text = ""
@@ -3850,98 +3955,44 @@ process.stdin.on("data", chunk => {
     return body.includes("You name conversations")
   }
 
-  it.each([
-    { outcome: "completed", width: 700 },
-    { outcome: "failed", width: 1180 },
-    { outcome: "cancelled", width: 700 },
-  ])("shows live compaction and clears it when $outcome", async ({ outcome, width }) => {
+  it("turns compaction on and off from libfx's model hooks", () => {
+    const seen: boolean[] = []
+    const hooks = compactionHooks((active) => seen.push(active))
+    const emit = (type: string, data: object) =>
+      hooks.onEvent({ type, data, executionId: "e1" } as never)
+    emit("model.start", { modelCallId: 1, purpose: "agent" })
+    emit("model.end", { modelCallId: 1, error: null, cancelled: false })
+    emit("model.start", { modelCallId: 2, purpose: "compaction" })
+    emit("model.end", { modelCallId: 2, error: "failed", cancelled: false })
+    expect(seen).toEqual([true, false])
+  })
+
+  it.each([700, 1180])("shows live compaction above the composer at %ipx and clears it", async (width) => {
     const { session } = seed()
-    const model = "fixture/compaction"
-    setState((current) => ({ ...current, apiKey: "fixture-key", models: [{ id: model, name: "Fixture", contextWindow: 65_536 }] }))
-    updateSession(session.id, (current) => ({ ...current, model, modelName: "Fixture", provider: null }))
-    let summarizing = false
-    let resumed = false
-    let release!: () => void
-    const held = new Promise<void>((resolve) => { release = resolve })
-    let finish!: () => void
-    const continued = new Promise<void>((resolve) => { finish = resolve })
-    const realFetch = globalThis.fetch
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
-      const url = String((input as Request)?.url ?? input)
-      if (!url.includes("/language-model")) {
-        return Response.json({ object: "list", data: [{ id: model, type: "language", context_window: 65_536, max_tokens: 4096, tags: ["tool-use"] }] })
-      }
-      if (isNaming(init)) return new Response("{}", { status: 400 })
-      const body = Buffer.from(init?.body as never).toString("utf8")
-      const summary = body.includes("You are writing a summary for a separate assistant")
-      if (summary) {
-        summarizing = true
-        await new Promise<void>((resolve, reject) => {
-          const abort = () => reject(new DOMException("Aborted", "AbortError"))
-          if (init?.signal?.aborted) return abort()
-          init?.signal?.addEventListener("abort", abort, { once: true })
-          void held.then(() => {
-            init?.signal?.removeEventListener("abort", abort)
-            resolve()
-          })
-        })
-        if (outcome === "failed") return new Response("Compaction fixture failed", { status: 500 })
-      } else if (summarizing) {
-        resumed = body.includes("<context_handoff>")
-        await continued
-      }
-      const events = [
-        { type: "text-delta", delta: summary ? "The user asked to retain the fixture details and continue." : "Fixture reply." },
-        { type: "finish", finishReason: { unified: "stop" }, usage: { inputTokens: { total: Math.ceil(body.length / 4) }, outputTokens: { total: 20 } } },
-      ]
-      return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("") + "data: [DONE]\n\n", { headers: { "content-type": "text/event-stream" } })
-    }) as typeof fetch
+    updateSession(session.id, (current) => ({ ...current, status: "running" }))
     const { renderer, app } = await mount(width, 800)
-    const work = (async () => {
-      for (let i = 0; i < 8 && !summarizing; i++) {
-        await send(session.id, `Fixture turn ${i}. ` + "The recorded fixture detail is stable. ".repeat(1500))
-      }
-    })()
-    try {
-      await vi.waitFor(() => expect(summarizing).toBe(true), { timeout: 5_000 })
-      await settle()
-      renderer.flush()
-      expect(renderer.findByTestId("compaction-status")).toBeDefined()
-      expect(await app.getByTestId("compaction-status").textContent()).toBe("Compacting…")
-      const status = await app.getByTestId("compaction-status").bounds()
-      const composer = await app.getByTestId("composer-column").bounds()
-      expect(status.x).toBeGreaterThanOrEqual(0)
-      expect(status.x + status.width).toBeLessThanOrEqual(width)
-      expect(status.y + status.height).toBeLessThanOrEqual(composer.y)
-      expect(findSession(getState(), session.id)!.status).toBe("running")
-      flushState()
-      const saved = JSON.parse(readFileSync(path.join(DIR, "state.json"), "utf8")) as { sessions: Session[] }
-      expect(saved.sessions.find((entry) => entry.id === session.id)!.compacting).toBe(false)
-      if (outcome === "cancelled") await app.getByTestId("stop").click()
-      else release()
-      if (outcome === "completed") {
-        await vi.waitFor(() => expect(resumed).toBe(true))
-        await settle()
-        renderer.flush()
-        expect(renderer.findByTestId("compaction-status")).toBeUndefined()
-        expect(findSession(getState(), session.id)!.status).toBe("running")
-        finish()
-      }
-      await work
-      await settle()
-      renderer.flush()
-      expect(renderer.findByTestId("compaction-status")).toBeUndefined()
-      expect(findSession(getState(), session.id)!.status).not.toBe("running")
-      expect(messagesOf(session.id).some((message) => message.kind === "assistant" && message.text.includes("Compacting"))).toBe(false)
-      if (outcome === "completed") expect(resumed).toBe(true)
-    } finally {
-      cancel(session.id)
-      release()
-      finish()
-      await work
-      await app.close()
-      globalThis.fetch = realFetch
-    }
+    const hooks = compactionHooks((compacting) =>
+      updateSession(session.id, (current) => ({ ...current, compacting })),
+    )
+
+    hooks.onEvent({ type: "model.start", executionId: "e1", data: { modelCallId: 1, purpose: "compaction" } } as never)
+    await settle()
+    renderer.flush()
+    expect(await app.getByTestId("compaction-status").textContent()).toBe("Compacting…")
+    const status = await app.getByTestId("compaction-status").bounds()
+    const composer = await app.getByTestId("composer-column").bounds()
+    expect(status.x).toBeGreaterThanOrEqual(0)
+    expect(status.x + status.width).toBeLessThanOrEqual(width)
+    expect(status.y + status.height).toBeLessThanOrEqual(composer.y)
+    flushState()
+    const saved = JSON.parse(readFileSync(path.join(DIR, "state.json"), "utf8")) as { sessions: Session[] }
+    expect(saved.sessions.find((entry) => entry.id === session.id)!.compacting).toBe(false)
+
+    hooks.onEvent({ type: "model.end", executionId: "e1", data: { modelCallId: 1, error: null, cancelled: false } } as never)
+    await settle()
+    renderer.flush()
+    expect(renderer.findByTestId("compaction-status")).toBeUndefined()
+    await app.close()
   })
 
   it("starts a new assistant message after a row lands under the last one", async () => {
@@ -4012,11 +4063,11 @@ process.stdin.on("data", chunk => {
       })
     }) as unknown as typeof fetch
 
-    const agent = (await createFxAgent({
+    const agent = (await createFxEngine({
       apiKey: "gateway-key",
       model: "anthropic/claude-sonnet-5",
       fetch: providerFetch(stub, {}),
-    })) as Agent
+    })) as FxEngine
     const turn = agent.prompt("hi")
     for await (const _ of turn) {
     }
@@ -4050,7 +4101,7 @@ process.stdin.on("data", chunk => {
     renderer.flush()
 
     const painted = renderer.getPaintedText().join("\n")
-    for (const section of ["MODELS", "RUNTIME", "EXTENSIONS", "ABOUT"]) {
+    for (const section of ["Models", "Runtime", "Extensions", "About"]) {
       expect(painted, section).toContain(section)
     }
     expect(await app.getByTestId("settings-page").count()).toBe(1)
@@ -5741,6 +5792,31 @@ process.stdin.on("data", chunk => {
     await app.close()
   })
 
+  it.skipIf(!CAN_PICK_IMAGES)("attaches the images chosen in the file panel", async () => {
+    const workspace = createWorkspace(tempDir(), "demo")
+    const session = createSession(workspace.id)
+    openSession(session.id, 0)
+    const picked = path.join(tempDir(), "shot.png")
+    writeFileSync(picked, Buffer.from("89504e470d0a1a0a", "hex"))
+
+    const { app, renderer } = await mount()
+    const asked: unknown[] = []
+    ;(renderer as unknown as { promptForPaths: (options: unknown) => Promise<string[]> }).promptForPaths =
+      async (options) => {
+        asked.push(options)
+        return [picked]
+      }
+
+    await app.getByTestId("attach-file").click()
+    await app.getByTestId("attach-choose").click()
+
+    await vi.waitFor(() => expect(getState().attachments[session.id]).toHaveLength(1))
+    expect(getState().attachments[session.id]![0]).toMatch(/\.png$/)
+    expect(asked).toEqual([{ files: true, multiple: true, prompt: "Attach" }])
+
+    await app.close()
+  })
+
   it.skipIf(!CAN_PICK_IMAGES)("compiles the scripts it hands to osascript", () => {
     for (const [language, script] of [
       ["AppleScript", CHOOSE_IMAGES],
@@ -6497,9 +6573,9 @@ process.stdin.on("data", chunk => {
 
     await app.getByTestId("tool-sub1").waitFor()
     const painted = () => renderer.getPaintedText().join(" ")
-    expect(painted()).toContain("subagent")
+    expect(painted()).toContain("Subagent")
     expect(painted()).toContain("survey the auth flow")
-    expect(painted()).toContain("read_file ×2")
+    expect(painted()).toContain("Read ×2")
     expect(painted()).not.toContain("auth flow lives in")
     expect(await app.getByTestId("subagent-step-s1").count()).toBe(0)
 
@@ -6508,7 +6584,7 @@ process.stdin.on("data", chunk => {
       expect(painted()).toContain("The auth flow lives in src/auth"),
     )
     // Expanded, every nested call shows as its own row with a real label,
-    // not just folded into the "read_file ×2" count.
+    // not just folded into the "Read ×2" count.
     await app.getByTestId("subagent-step-s1").waitFor()
     await app.getByTestId("subagent-step-s2").waitFor()
     await app.getByTestId("subagent-step-s3").waitFor()

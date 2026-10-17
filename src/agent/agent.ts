@@ -2,11 +2,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import path from "node:path"
 
 import {
-  createFxAgent,
-  type Agent,
-  type StopReason,
-  type Turn,
-} from "libfx"
+  createFxEngine,
+  type FxEngine,
+  type FxStopReason,
+  type FxEngineTurn,
+} from "libfx/node"
 
 import {
   CHECKPOINT_DIR,
@@ -24,7 +24,9 @@ import {
   recordUsage,
   removeMessage,
   sessionModel,
+  setSteered,
   shiftQueue,
+  takeSteered,
   NO_CREDENTIAL,
   updateSession,
   type Session,
@@ -51,14 +53,14 @@ import { acquireMcp, MCP_CONFIG_FILE, pruneMcpGrants, resetMcp, type McpLease } 
 import { beginTurn, endTurn, forgetTurn } from "../workspace/turns"
 
 type Runtime = {
-  agent: Agent
+  agent: FxEngine
   model: string | null
   provider: ProviderId | null
   effort: string | null
   fast: boolean
   search: boolean
   commands: SkillCommand[]
-  turn: Turn | null
+  turn: FxEngineTurn | null
   mcp: McpLease
 }
 
@@ -166,10 +168,10 @@ async function nameSession(sessionId: string, prompt: string): Promise<void> {
   if (!back) return
 
   try {
-    const agent = (await createFxAgent({
+    const agent = (await createFxEngine({
       ...back.options,
       instructions: TITLE_INSTRUCTIONS,
-    })) as Agent
+    })) as FxEngine
     try {
       const turn = agent.prompt(`<request>\n${prompt.slice(0, 2_000)}\n</request>\n\nTitle:`)
       let raw = ""
@@ -205,7 +207,7 @@ function readCheckpoint(sessionId: string): Uint8Array | undefined {
   }
 }
 
-async function saveCheckpoint(sessionId: string, agent: Agent): Promise<void> {
+async function saveCheckpoint(sessionId: string, agent: FxEngine): Promise<void> {
   try {
     const bytes = await agent.checkpoint()
     mkdirSync(CHECKPOINT_DIR, { recursive: true })
@@ -330,7 +332,7 @@ async function runtimeFor(sessionId: string): Promise<Runtime> {
     skills: estimateTokens(skills.instructions, skills.tools),
     mcp: estimateTokens(mcp.instructions),
   })
-  const agent = (await createFxAgent({
+  const agent = (await createFxEngine({
     ...back.options,
     instructions: [...system, skills.instructions, mcp.instructions].filter(Boolean),
     tools: [
@@ -338,7 +340,7 @@ async function runtimeFor(sessionId: string): Promise<Runtime> {
       ...skills.tools.map((tool) => adopt(tool, toolContext)),
     ],
     checkpoint: readCheckpoint(sessionId),
-  })) as Agent
+  })) as FxEngine
 
   if (skills.names.length > 0 || mcp.names.length > 0) {
     const loaded = [
@@ -447,7 +449,7 @@ function failedRequest(sessionId: string): { id: string; text: string } | null {
   return null
 }
 
-function noticeText(reason: StopReason): string | null {
+function noticeText(reason: FxStopReason): string | null {
   switch (reason) {
     case "cancelled":
       return "Stopped."
@@ -474,7 +476,17 @@ export async function send(
   if (current.status === "running") {
     if (!trimmed && images.length === 0) return
     if (trimmed && images.length === 0 && enqueueChildNote(sessionId, trimmed)) return
-    enqueuePrompt(sessionId, trimmed, images)
+    const item = enqueuePrompt(sessionId, trimmed, images)
+    const turn = runtimes.get(sessionId)?.turn
+    if (!turn?.steer || images.length > 0 || !steerable(sessionId, trimmed)) return
+    // Marked before the await: the turn can reach its next boundary and report
+    // the message entering before steer() resolves.
+    setSteered(sessionId, item.id, true)
+    try {
+      await turn.steer(trimmed)
+    } catch {
+      setSteered(sessionId, item.id, false)
+    }
     return
   }
 
@@ -568,6 +580,11 @@ export async function send(
     for await (const event of turn) {
       if (event.type === "text_delta") stream.push("text", event.delta)
       else if (event.type === "reasoning_delta") stream.push("reasoning", event.delta)
+      else if (event.type === "user_message") {
+        stream.flush()
+        takeSteered(sessionId, event.text)
+        appendMessage(sessionId, { id: newId(), kind: "user", at: Date.now(), text: event.text })
+      }
     }
     stream.flush()
 
@@ -608,6 +625,16 @@ export async function send(
   if (findSession(getState(), sessionId)?.status !== "idle") return
   const next = shiftQueue(sessionId)
   if (next) await send(sessionId, next.text, next.images)
+}
+
+/** Steering takes plain text only: a skill command or an @-mention needs the
+ *  expansion a fresh turn gives it, so those wait in the queue instead. */
+function steerable(sessionId: string, text: string): boolean {
+  const runtime = runtimes.get(sessionId)
+  if (!runtime || splitCommand(text, runtime.commands)) return false
+  const state = getState()
+  const workspace = findWorkspace(state, findSession(state, sessionId)?.workspaceId ?? null)
+  return !workspace || mentionBlocks(workspace.path, text).blocks.length === 0
 }
 
 export function cancel(sessionId: string): void {

@@ -1,25 +1,28 @@
-const isBrowser = typeof window !== "undefined"
+/** GPUI resolves this to the platform UI face, SF Pro on macOS. An unknown
+ *  family falls back silently, so a typo here would not error. */
+export const FONT = ".SystemUIFont"
 
-export const FONT = isBrowser ? "Lilex" : "SF Mono"
+/** Code, diffs, paths and commands. */
+export const MONO = "SF Mono"
 
 export const color = {
-  background: "#000000",
-  raised: "#0a0a0a",
-  muted: "#161616",
-  selected: "#171717",
+  background: "#0f0f10",
+  raised: "#161618",
+  muted: "#1c1c1f",
+  selected: "#232326",
 
-  hover: "#ffffff0a",
+  hover: "#ffffff0b",
   hoverStrong: "#ffffff14",
   pressed: "#ffffff1f",
 
-  border: "#262626",
-  ring: "#666666",
+  border: "#27272a",
+  ring: "#6b6b70",
 
   text: "#ededed",
-  secondary: "#a1a1a1",
-  tertiary: "#8a8a8a",
-  faint: "#626262",
-  ghost: "#525252",
+  secondary: "#a1a1a6",
+  tertiary: "#8c8c92",
+  faint: "#68686e",
+  ghost: "#56565b",
 
   primary: "#ededed",
   onPrimary: "#000000",
@@ -27,6 +30,9 @@ export const color = {
 
   danger: "#f36356",
   dangerSurface: "#f363561f",
+
+  added: "#6cc58a",
+  removed: "#f36356",
 } as const
 
 export const space = {
@@ -48,6 +54,7 @@ export const text = {
   micro: 11,
   small: 12,
   body: 13,
+  prose: 14,
   title: 14,
 } as const
 
@@ -91,7 +98,7 @@ export const nativeTheme = {
   diffDel: "#2a1315",
   diffHunkBg: "#ffffff08",
   fontSans: FONT,
-  fontMono: FONT,
+  fontMono: MONO,
   syntax: {
     comment: "#626262",
     keyword: "#c7a2ff",
@@ -123,10 +130,10 @@ export const nativeTheme = {
     codeLineHeight: 19,
     diffTextSize: 12,
     diffLineHeight: 19,
-    mdTextSize: text.body,
-    mdLineHeight: 21,
+    mdTextSize: text.prose,
+    mdLineHeight: 22,
     mdBlockGap: 12,
-    mdHeadingSizes: [18, 16, 14, 13],
+    mdHeadingSizes: [20, 17, 15, 14],
     mdCodeRadius: radius.md,
     mdInlineCodeRadius: radius.sm,
   },

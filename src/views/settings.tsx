@@ -105,8 +105,8 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   const rows = Children.toArray(children)
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: space.md, minWidth: 0 }}>
-      <Label size={text.micro} color={color.ghost}>
-        {title.toUpperCase()}
+      <Label size={text.small} weight={500} color={color.tertiary}>
+        {title}
       </Label>
       <div
         style={{
@@ -883,8 +883,8 @@ function UsageRow({ label, tokens, detail }: { label: string; tokens: number; de
 function UsageGroup({ title }: { title: string }) {
   return (
     <div style={{ paddingTop: space.xs, paddingLeft: space.lg }}>
-      <Label size={text.micro} color={color.ghost}>
-        {title.toUpperCase()}
+      <Label size={text.micro} color={color.tertiary}>
+        {title}
       </Label>
     </div>
   )
